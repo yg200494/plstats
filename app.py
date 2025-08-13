@@ -135,7 +135,11 @@ def chip(name, goals, assists, photo):
     stats = " · ".join(
         s for s in [f"⚽ {g}" if g else "", f"🅰️ {a}" if a else ""] if s
     )
-    return f'<span class="chip">{img}<span>{name}</span>{(" <span class=\\"small\\">"+stats+"</span>") if stats else ""}</span>'
+    if stats:
+        return f'<span class="chip">{img}<span>{name}</span> <span class="small">{stats}</span></span>'
+    else:
+        return f'<span class="chip">{img}<span>{name}</span></span>'
+
 
 def public_image_url(path: str) -> str:
     try:
