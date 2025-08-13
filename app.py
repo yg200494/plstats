@@ -136,29 +136,65 @@ def build_fact(players, matches, lineups):
 
 def player_agg(l, season=None, min_games=0, last_gw=None):
     df = l.copy()
-    if season: df = df[df["season"]==season]
-    if last_gw: df = df[df["gw"] >= (df["gw"].max() - last_gw + 1)]
+    if season is not None:
+        df = df[df["season"] == season]
+    if last_gw:
+        # last X GWs relative to the max GW present in the filtered dataset
+        max_gw = pd.to_numeric(df["gw"], errors="coerce").max()
+        if pd.notna(max_gw):
+            df = df[pd.to_numeric(df["gw"], errors="coerce") >= (int(max_gw) - int(last_gw) + 1)]
+
     if df.empty:
-        return pd.DataFrame(columns=["name","gp","w","d","l","win_pct","goals","assists","ga","ga_pg","team_contrib_pct","photo"])
+        return pd.DataFrame(columns=[
+            "name","gp","w","d","l","win_pct","goals","assists","ga","ga_pg","team_contrib_pct","photo"
+        ])
+
+    # Ensure numeric types
+    df["goals"] = pd.to_numeric(df["goals"], errors="coerce").fillna(0).astype(int)
+    df["assists"] = pd.to_numeric(df["assists"], errors="coerce").fillna(0).astype(int)
+    df["team_goals"] = pd.to_numeric(df["team_goals"], errors="coerce")
+
     gp = df.groupby("name").size().rename("gp")
     w = df[df["result"]=="W"].groupby("name").size().reindex(gp.index, fill_value=0)
     d = df[df["result"]=="D"].groupby("name").size().reindex(gp.index, fill_value=0)
     lcnt = df[df["result"]=="L"].groupby("name").size().reindex(gp.index, fill_value=0)
+
     goals = df.groupby("name")["goals"].sum().reindex(gp.index, fill_value=0)
     assists = df.groupby("name")["assists"].sum().reindex(gp.index, fill_value=0)
-    ga = goals + assists
-    ga_pg = (ga / gp).round(2)
-    team_goals = df.groupby("name")["team_goals"].sum().replace(0, np.nan).reindex(gp.index)
-    contrib = ((ga / team_goals) * 100).round(1).fillna(0)
+    ga = (goals + assists).astype(float)
+
+    # Per-game
+    ga_pg = (ga / gp.replace(0, np.nan)).round(2).fillna(0)
+
+    # Team Contribution %  = (G+A) / (team goals while you played)
+    team_goals_sum = df.groupby("name")["team_goals"].sum(min_count=1).reindex(gp.index)
+    denom = team_goals_sum.replace(0, np.nan)  # avoid div/0
+    contrib = ((ga / denom) * 100).round(1).fillna(0)
+
+    # Win%
+    win_pct = ((w.values / np.maximum(gp.values, 1)) * 100).round(1)
+
     photo = df.groupby("name")["photo"].last().reindex(gp.index)
+
     out = pd.DataFrame({
-        "name": gp.index, "gp": gp.values, "w": w.values, "d": d.values, "l": lcnt.values,
-        "win_pct": ((w.values/np.maximum(gp.values,1))*100).round(1),
-        "goals": goals.values, "assists": assists.values, "ga": ga.values, "ga_pg": ga_pg.values,
-        "team_contrib_pct": contrib.values, "photo": photo.values
+        "name": gp.index,
+        "gp": gp.values,
+        "w": w.values,
+        "d": d.values,
+        "l": lcnt.values,
+        "win_pct": win_pct,
+        "goals": goals.values.astype(int),
+        "assists": assists.values.astype(int),
+        "ga": ga.values.astype(int),
+        "ga_pg": ga_pg.values,
+        "team_contrib_pct": contrib.values,
+        "photo": photo.values
     }).sort_values(["ga","goals","assists"], ascending=False)
-    if min_games>0: out = out[out["gp"]>=min_games]
+
+    if min_games > 0:
+        out = out[out["gp"] >= min_games]
     return out
+
 
 # ========== UI ==========
 def header():
