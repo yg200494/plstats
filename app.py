@@ -781,6 +781,7 @@ def page_matches():
         st.success("Formations updated.")
         st.rerun()
 
+
     else:
         fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
         fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
