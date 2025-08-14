@@ -396,81 +396,116 @@ def add_match_wizard():
     if not s:
         st.info("Login as admin.")
         return
+
+    k = "amw"  # key prefix for this wizard
+
     col1, col2, col3 = st.columns(3)
-    season = int(col1.number_input("Season", min_value=2020, max_value=2100, value=date.today().year))
-    gw = int(col2.number_input("Gameweek", min_value=1, value=1))
-    side_count = int(col3.selectbox("Side count", [5,7], index=0))
-    d = st.date_input("Date", value=date.today())
+    season = int(col1.number_input("Season", min_value=2020, max_value=2100,
+                                   value=date.today().year, key=f"{k}_season"))
+    gw = int(col2.number_input("Gameweek", min_value=1, value=1, key=f"{k}_gw"))
+    side_count = int(col3.selectbox("Side count", [5, 7], index=0, key=f"{k}_sidecount"))
+    d = st.date_input("Date", value=date.today(), key=f"{k}_date")
+
     col4, col5 = st.columns(2)
-    team_a = col4.text_input("Team A", value="Non-bibs")
-    team_b = col5.text_input("Team B", value="Bibs")
+    team_a = col4.text_input("Team A", value="Non-bibs", key=f"{k}_teama")
+    team_b = col5.text_input("Team B", value="Bibs", key=f"{k}_teamb")
+
     col6, col7 = st.columns(2)
-    score_a = int(col6.number_input("Score A", min_value=0, value=0))
-    score_b = int(col7.number_input("Score B", min_value=0, value=0))
+    score_a = int(col6.number_input("Score A", min_value=0, value=0, key=f"{k}_scorea"))
+    score_b = int(col7.number_input("Score B", min_value=0, value=0, key=f"{k}_scoreb"))
+
     presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
     presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
-    preset_list = presets7 if side_count==7 else presets5
-    col8, col9 = st.columns(2)
-    fa = col8.selectbox("Formation A", preset_list, index=0)
-    fb = col9.selectbox("Formation B", preset_list, index=0)
-    motm = st.text_input("MOTM (optional)", value="")
+    preset_list = presets7 if side_count == 7 else presets5
 
-    if st.button("Save match"):
+    col8, col9 = st.columns(2)
+    fa = col8.selectbox("Formation A", preset_list, index=0, key=f"{k}_fa")
+    fb = col9.selectbox("Formation B", preset_list, index=0, key=f"{k}_fb")
+
+    motm = st.text_input("MOTM (optional)", value="", key=f"{k}_motm")
+
+    if st.button("Save match", key=f"{k}_save"):
         try:
-            # upsert by (season,gw) unique
             payload = {
                 "season": season, "gw": gw, "side_count": side_count,
                 "team_a": team_a, "team_b": team_b,
                 "score_a": score_a, "score_b": score_b,
                 "date": str(d), "motm_name": (motm or None),
                 "formation_a": fa, "formation_b": fb,
-                "is_draw": (score_a==score_b)
+                "is_draw": (score_a == score_b)
             }
-            # get existing id?
-            res = sb.table("matches").select("id").eq("season", season).eq("gw", gw).limit(1).execute().data
-            if res:
-                mid = res[0]["id"]
+            # upsert by (season, gw)
+            existing = sb.table("matches").select("id").eq("season", season).eq("gw", gw).limit(1).execute().data
+            if existing:
+                mid = existing[0]["id"]
                 s.table("matches").update(payload).eq("id", mid).execute()
             else:
                 s.table("matches").insert(payload).execute()
+
             clear_caches()
             st.success("Match saved.")
         except Exception as e:
             st.error(f"Save failed: {e}")
-
 def fixtures_admin_table():
     s = service()
     if not s:
         st.info("Login as admin.")
         return
+
+    k = "fx"  # key prefix for fixtures editor
+
     matches = fetch_matches()
     if matches.empty:
         st.info("No matches yet.")
         return
-    seasons = sorted(matches["season"].dropna().unique().tolist())
-    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0, key="fix_season")
-    subset = matches[matches["season"]==sel_season].sort_values("gw")
-    labels = subset.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}", axis=1)
-    id_map = {labels.iloc[i]: subset.iloc[i]["id"] for i in range(len(subset))}
-    sel = st.selectbox("Edit match", list(id_map.keys()))
-    mid = id_map[sel]
-    m = subset[subset["id"]==mid].iloc[0]
 
-    c1,c2,c3 = st.columns(3)
-    score_a = int(c1.number_input("Score A", min_value=0, value=int(m.get("score_a") or 0)))
-    score_b = int(c2.number_input("Score B", min_value=0, value=int(m.get("score_b") or 0)))
-    motm = c3.text_input("MOTM", value=str(m.get("motm_name") or ""))
+    seasons = sorted(matches["season"].dropna().unique().tolist())
+    sel_season = st.selectbox("Season", seasons,
+                              index=(len(seasons) - 1 if seasons else 0),
+                              key=f"{k}_season")
+    subset = matches[matches["season"] == sel_season].sort_values("gw")
+
+    labels = subset.apply(
+        lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}",
+        axis=1
+    )
+    id_map = {labels.iloc[i]: subset.iloc[i]["id"] for i in range(len(subset))}
+    sel = st.selectbox("Edit match", list(id_map.keys()), key=f"{k}_pick")
+    mid = id_map[sel]
+    m = subset[subset["id"] == mid].iloc[0]
+
+    c1, c2, c3 = st.columns(3)
+    score_a = int(c1.number_input("Score A", min_value=0,
+                                  value=int(m.get("score_a") or 0),
+                                  key=f"{k}_sa_{mid}"))
+    score_b = int(c2.number_input("Score B", min_value=0,
+                                  value=int(m.get("score_b") or 0),
+                                  key=f"{k}_sb_{mid}"))
+    motm = c3.text_input("MOTM", value=str(m.get("motm_name") or ""),
+                         key=f"{k}_motm_{mid}")
 
     presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
     presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
-    fa = st.selectbox("Formation A", presets7 if int(m.get("side_count") or 5)==7 else presets5, index=0, key=f"fx_fa_{mid}")
-    fb = st.selectbox("Formation B", presets7 if int(m.get("side_count") or 5)==7 else presets5, index=0, key=f"fx_fb_{mid}")
-    d = st.date_input("Date", value=pd.to_datetime(m.get("date") or date.today()).date())
-    if st.button("Update match"):
+    is7 = int(m.get("side_count") or 5) == 7
+    options = presets7 if is7 else presets5
+
+    # Choose index based on current value if present
+    fa_current = str(m.get("formation_a") or (options[0] if options else ""))
+    fb_current = str(m.get("formation_b") or (options[0] if options else ""))
+    fa_idx = options.index(fa_current) if fa_current in options else 0
+    fb_idx = options.index(fb_current) if fb_current in options else 0
+
+    fa = st.selectbox("Formation A", options, index=fa_idx, key=f"{k}_fa_{mid}")
+    fb = st.selectbox("Formation B", options, index=fb_idx, key=f"{k}_fb_{mid}")
+
+    d_val = pd.to_datetime(m.get("date") or date.today()).date()
+    d = st.date_input("Date", value=d_val, key=f"{k}_date_{mid}")
+
+    if st.button("Update match", key=f"{k}_update_{mid}"):
         try:
             s.table("matches").update({
                 "score_a": score_a, "score_b": score_b,
-                "is_draw": (score_a==score_b),
+                "is_draw": (score_a == score_b),
                 "motm_name": (motm or None),
                 "formation_a": fa, "formation_b": fb,
                 "date": str(d)
@@ -479,6 +514,7 @@ def fixtures_admin_table():
             st.success("Updated.")
         except Exception as e:
             st.error(f"Update failed: {e}")
+
 
 # ---------- Page: Matches ----------
 def page_matches():
