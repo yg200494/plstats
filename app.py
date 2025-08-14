@@ -1125,7 +1125,10 @@ def page_matches():
                 colm1, colm2 = st.columns([3, 1])
                 with colm1:
                     motm_pick = st.selectbox(
-                        "Man of the Match", all_names if all_names else [""], index=(default_idx if default_idx is not None else 0), key=f"motm_{mid}"
+                        "Man of the Match",
+                        all_names if all_names else [""],
+                        index=(default_idx if default_idx is not None else 0),
+                        key=f"motm_{mid}",
                     )
                 with colm2:
                     if st.button("Save MOTM", key=f"motm_save_{mid}"):
@@ -1158,72 +1161,28 @@ def page_matches():
                         st.success(f"Saved {r['name']}")
                         st.rerun()
 
-    # --- Drag & drop lineup (robust, auto-fallback) ---
-   with st.expander("🧲 Arrange lineup", expanded=False):
-    s = service()
-    if not s:
-        st.info("Login as admin.")
-    else:
-        updates = []
-        colA, colB = st.columns(2)
+    # --- Arrange lineup (tap-to-place editor, admin only) ---
+    with st.expander("🧲 Arrange lineup", expanded=False):
+        s = service()
+        if not s:
+            st.info("Login as admin.")
+        else:
+            updates = []
+            colA, colB = st.columns(2)
 
-        with colA:
-            st.markdown(f"### {m['team_a']}")
-            upd_a = tap_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
-            if upd_a: updates.extend(upd_a)
-
-        with colB:
-            st.markdown(f"### {m['team_b']}")
-            upd_b = tap_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
-            if upd_b: updates.extend(upd_b)
-
-        if updates and st.button("💾 Save all positions", type="primary", key=f"save_tap_{mid}"):
-            try:
-                s = service()
-                CHUNK = 20
-                for i in range(0, len(updates), CHUNK):
-                    s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
-                clear_caches()
-                st.success("Positions saved.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Save failed: {e}")
-
-
-
-            # A side
             with colA:
-                st.markdown(f"**{m['team_a']}**")
-                upd_a = None
-                if (not use_compat) and _PITCH_DND_AVAILABLE:
-                    try:
-                        upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
-                    except Exception:
-                        st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
-                        st.session_state["compat_dnd"] = True
-                        upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
-                else:
-                    upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
+                st.markdown(f"### {m['team_a']}")
+                upd_a = tap_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
                 if upd_a:
                     updates.extend(upd_a)
 
-            # B side
             with colB:
-                st.markdown(f"**{m['team_b']}**")
-                upd_b = None
-                if (not use_compat) and _PITCH_DND_AVAILABLE:
-                    try:
-                        upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
-                    except Exception:
-                        st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
-                        st.session_state["compat_dnd"] = True
-                        upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
-                else:
-                    upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
+                st.markdown(f"### {m['team_b']}")
+                upd_b = tap_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
                 if upd_b:
                     updates.extend(upd_b)
 
-            if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
+            if updates and st.button("💾 Save all positions", type="primary", key=f"save_tap_{mid}"):
                 try:
                     CHUNK = 20
                     for i in range(0, len(updates), CHUNK):
