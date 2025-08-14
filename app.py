@@ -1,5 +1,5 @@
 # app.py — Powerleague Stats (final)
-# Streamlit + Supabase | Mobile-first | Black & Gold UI | 5s/7s | Slot-based lineup editor
+# Streamlit + Supabase | Mobile-first | Black & Gold UI | 5s/7s | Tap & Slot lineup editors
 
 import streamlit as st
 import pandas as pd
@@ -10,14 +10,21 @@ from supabase import create_client
 import uuid
 import io
 
-# Optional HEIC -> PNG conversion
+# HEIC -> PNG conversion
 try:
     import pillow_heif
     HEIF_OK = True
 except Exception:
     HEIF_OK = False
 
-from PIL import Image
+from PIL import Image, ImageDraw
+
+# Optional tap-to-place editor
+try:
+    from streamlit_drawable_canvas import st_canvas
+    CANVAS_OK = True
+except Exception:
+    CANVAS_OK = False
 
 # ------------------------------
 # Streamlit config
@@ -104,6 +111,17 @@ thead tr th{background:rgba(255,255,255,.06)!important}
 }
 </style>
 """, unsafe_allow_html=True)
+
+# Compact mode for iPhone
+if st.session_state.get("compact"):
+    st.markdown("""
+    <style>
+    .pitchX{padding-top:56%}
+    .bubble{width:58px;height:58px;box-shadow:none;border-width:1px}
+    .name{font-size:.9rem}
+    .pill{font-size:.85rem}
+    </style>
+    """, unsafe_allow_html=True)
 
 # ------------------------------
 # Cache utilities
@@ -241,7 +259,6 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                                 formation_a: str, formation_b: str,
                                 motm_name: Optional[str],
                                 team_a: str, team_b: str):
-    css_open = ""  # already injected globally
     def lerp(a: float, b: float, t: float) -> float: return a + (b - a) * t
 
     a_rows = _ensure_positions(normalize_lineup_names(a_rows), formation_a)
@@ -297,6 +314,57 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     html += _place_side(b_rows, parts_b, left_half=False)
     html.append("</div></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+
+# --- Tap editor helpers ---
+def slot_centers_pct(parts: List[int], *, left_half: bool) -> List[Tuple[int,int,float,float]]:
+    """Return list of (line, slot, x%, y%) centers for the given formation lines."""
+    y_top_margin, y_bot_margin = 6, 6
+    inner_h = 100 - y_top_margin - y_bot_margin
+    left_min, left_max  = 6, 48
+    right_min, right_max = 52, 94
+    def lerp(a: float, b: float, t: float) -> float: return a + (b - a) * t
+    coords = []
+    n_lines = max(1, len(parts))
+    for line_idx in range(n_lines):
+        t = (line_idx + 1) / (n_lines + 1)
+        x = lerp(left_min, left_max, t) if left_half else lerp(right_max, right_min, t)
+        count = parts[line_idx]
+        for j in range(count):
+            y_t = (j + 1) / (count + 1)
+            y = y_top_margin + y_t * inner_h
+            coords.append((line_idx, j, x, y))
+    return coords
+
+def pitch_bg_image(width: int, height: int) -> Image.Image:
+    """Small visual pitch for the tap canvas background."""
+    img = Image.new("RGB", (width, height), (26, 60, 40))
+    d = ImageDraw.Draw(img)
+    W,H = width, height
+    margin = int(0.05*H)
+    # outer
+    d.rectangle([int(0.035*W), margin, int(0.965*W), H-margin], outline=(255,255,255), width=2)
+    # halfway
+    d.line([(W//2, margin), (W//2, H-margin)], fill=(255,255,255), width=2)
+    # center circle
+    r = int(0.065*W); cx,cy = W//2, H//2
+    d.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(255,255,255), width=2)
+    # boxes
+    def boxes(side):
+        if side=="L":
+            x1 = int(0.035*W); x2 = int(x1 + 0.165*W)
+            x3 = int(x1);      x4 = int(x1 + 0.076*W)
+            pdx = int(0.11*W)
+        else:
+            x2 = int(0.965*W); x1 = int(x2 - 0.165*W)
+            x4 = int(0.965*W); x3 = int(x4 - 0.076*W)
+            pdx = int(W - 0.11*W)
+        y1 = int(0.20*H); y2 = int(0.80*H)
+        y3 = int(0.39*H); y4 = int(0.61*H)
+        d.rectangle([x1, y1, x2, y2], outline=(255,255,255), width=2)
+        d.rectangle([x3, y3, x4, y4], outline=(255,255,255), width=2)
+        d.ellipse([pdx-3, H//2-3, pdx+3, H//2+3], fill=(255,255,255))
+    boxes("L"); boxes("R")
+    return img
 
 # ------------------------------
 # Fact table for stats (robust)
@@ -382,7 +450,7 @@ def sidebar_admin():
         pwd = st.sidebar.text_input("Password", type="password", key="sb_pwd")
         if st.sidebar.button("Login", key="sb_login"):
             if ADMIN_PASSWORD and pwd == ADMIN_PASSWORD:
-                st.session_state["is_admin"] = True; st.success("Admin enabled"); st.rerun()
+                st.session_state["is_admin"] = True; st.rerun()
             else:
                 st.sidebar.error("Wrong password")
     else:
@@ -391,17 +459,23 @@ def sidebar_admin():
             clear_caches(); st.rerun()
         if st.sidebar.button("Log out", key="sb_logout"):
             st.session_state["is_admin"] = False; st.rerun()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Display")
+    compact = st.sidebar.toggle("Compact mode (iPhone)", value=st.session_state.get("compact", True), key="ui_compact")
+    initials_only = st.sidebar.toggle("Initials on pitch (faster)", value=st.session_state.get("initials_only", True), key="ui_initials_only")
+    st.session_state["compact"] = compact
+    st.session_state["initials_only"] = initials_only
 
 # ------------------------------
-# Slot-based lineup editor (easy)
+# Slot-based lineup editor (fallback)
 # ------------------------------
 def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: str,
                         lineup_df: pd.DataFrame, all_players: pd.DataFrame, keypref: str):
     """
-    Slot editor:
-      • Pick GK
-      • For each line/slot in formation, pick player + G/A
-      • Save = delete-then-insert for (match_id, team)
+    Editor pattern:
+      - Select GK from dropdown
+      - For each line/slot in formation: select player (+ goals/assists)
+      - Save button: delete-then-insert per team
     """
     st.markdown(f"#### {team_name}")
     formation = validate_formation(formation, side_count)
@@ -413,7 +487,7 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
 
     def _to_int_or(v, default):
         try:
-            if v is None or (hasattr(pd, "isna") and pd.isna(v)):  # handles NaN / pd.NA
+            if v is None or (hasattr(pd, "isna") and pd.isna(v)):
                 return default
             return int(v)
         except Exception:
@@ -455,9 +529,7 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
         cols = st.columns(count)
         for j in range(count):
             key_base = f"{keypref}_L{line_idx}_S{j}"
-            # default assignment
             assigned_default = current_assign.get((line_idx, j), "—")
-            # keep already-assigned name available in dropdown even if "used"
             avail = ["—"] + [n for n in pool if (n not in used or n == assigned_default)]
             sel_idx = avail.index(assigned_default) if assigned_default in avail else 0
             sel = cols[j].selectbox("Player", avail, index=sel_idx, key=f"{key_base}_sel")
@@ -475,11 +547,8 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
         if not s:
             st.error("Admin required.")
         else:
-            # Delete existing team rows
             s.table("lineups").delete().eq("match_id", mid).eq("team", team_name).execute()
             rows = []
-
-            # GK row (optional)
             if gk_pick != "—":
                 rows.append({
                     "id": str(uuid.uuid4()),
@@ -492,8 +561,6 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
                     "goals": 0, "assists": 0,
                     "line": None, "slot": None, "position": None
                 })
-
-            # Outfield rows
             for (ln, sl), nm in slot_values.items():
                 if nm == "—": continue
                 rows.append({
@@ -510,15 +577,221 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
                     "slot": int(sl),
                     "position": None
                 })
-
             if rows:
                 for i in range(0, len(rows), 500):
                     s.table("lineups").insert(rows[i:i+500]).execute()
+            clear_caches(); st.success("Lineup saved."); st.rerun()
 
-            clear_caches()
-            st.success("Lineup saved.")
+# ------------------------------
+# Tap-to-place lineup editor (iPhone-friendly)
+# ------------------------------
+def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: str,
+                        lineup_df: pd.DataFrame, all_players: pd.DataFrame, keypref: str,
+                        *, left_half: bool, lfact_for_auto: Optional[pd.DataFrame] = None):
+    if not CANVAS_OK:
+        st.info("Tap editor requires 'streamlit-drawable-canvas'. Using slot editor.")
+        lineup_slots_editor(team_name, mid, side_count, formation, lineup_df, all_players, keypref=keypref)
+        return
+
+    formation = validate_formation(formation, side_count)
+    parts = formation_to_lines(formation)
+    outfield_needed = 4 if side_count == 5 else 6
+    if sum(parts) != outfield_needed:
+        parts = [1,2,1] if outfield_needed == 4 else [2,1,2,1]
+        formation = "-".join(map(str, parts))
+
+    sk_assign = f"{keypref}_assign"
+    sk_gk = f"{keypref}_gk"
+    sk_ga = f"{keypref}_ga"
+    sk_sel = f"{keypref}_sel"
+    sk_clicks = f"{keypref}_clicks"
+
+    def _from_db():
+        ld = normalize_lineup_names(lineup_df.copy())
+        assign = {}
+        ga = {}
+        gk = None
+        for _, r in ld.iterrows():
+            nm = str(r.get("name") or r.get("player_name") or "").strip()
+            if not nm: continue
+            if bool(r.get("is_gk")):
+                gk = nm
+            else:
+                ln = r.get("line"); sl = r.get("slot")
+                if pd.notna(ln) and pd.notna(sl):
+                    ln = int(ln); sl = int(sl)
+                    assign[(ln, sl)] = nm
+                    ga[(ln, sl)] = (int(r.get("goals") or 0), int(r.get("assists") or 0))
+        st.session_state[sk_assign] = assign
+        st.session_state[sk_ga] = ga
+        st.session_state[sk_gk] = gk
+        st.session_state[sk_sel] = None
+        st.session_state[sk_clicks] = 0
+
+    if sk_assign not in st.session_state:
+        _from_db()
+
+    pool = all_players["name"].dropna().astype(str).tolist()
+    assign: Dict[Tuple[int,int], str] = dict(st.session_state.get(sk_assign, {}))
+    ga: Dict[Tuple[int,int], Tuple[int,int]] = dict(st.session_state.get(sk_ga, {}))
+    gk_name: Optional[str] = st.session_state.get(sk_gk)
+    selected: Optional[str] = st.session_state.get(sk_sel)
+
+    assigned_names = set(assign.values())
+    bench = [n for n in pool if n not in assigned_names and n != gk_name]
+
+    cTop = st.container()
+    cPitch, cSide = st.columns([3, 2])
+
+    with cSide:
+        st.markdown(f"**{team_name} — Bench / Select**")
+        q = st.text_input("Search", key=f"{keypref}_q")
+        show_bench = [n for n in bench if (not q or q.lower() in n.lower())]
+        st.caption("Tap a name to select, then tap the pitch")
+        cols = st.columns(3)
+        i = 0
+        for nm in (show_bench + sorted(list(assigned_names))):
+            if q and nm not in show_bench and q.lower() not in nm.lower():
+                continue
+            with cols[i%3]:
+                if st.button(("✓ " if selected==nm else "") + nm, key=f"{keypref}_pick_{nm}"):
+                    st.session_state[sk_sel] = nm; st.rerun()
+            i += 1
+        st.markdown("---")
+        # GK controls
+        st.caption("Goalkeeper")
+        gk_opts = ["—"] + pool
+        gk_idx = gk_opts.index(gk_name) if gk_name in gk_opts else 0
+        new_gk = st.selectbox("GK", gk_opts, index=gk_idx, key=f"{keypref}_gksel")
+        if new_gk != gk_name:
+            st.session_state[sk_gk] = None if new_gk == "—" else new_gk
             st.rerun()
 
+        # Auto-pick & Reset & Save
+        colB1, colB2, colB3 = st.columns(3)
+        if colB1.button("↺ Reset", key=f"{keypref}_reset"):
+            _from_db(); st.rerun()
+
+        def _auto_pick():
+            names_rank = pool
+            if lfact_for_auto is not None and not lfact_for_auto.empty:
+                agg = lfact_for_auto.groupby("name").agg(G=("goals","sum"), A=("assists","sum")).reset_index()
+                agg["GA"] = agg["G"] + agg["A"]
+                ranked = agg.sort_values(["GA","G","A"], ascending=[False,False,False])["name"].tolist()
+                names_rank = ranked + [n for n in pool if n not in ranked]
+            gk_candidates = []
+            if lfact_for_auto is not None and not lfact_for_auto.empty:
+                gk_candidates = lfact_for_auto[lfact_for_auto["is_gk"]==True]["name"].value_counts().index.tolist()
+            new_gk = None
+            for nm in gk_candidates + pool:
+                if nm in pool:
+                    new_gk = nm; break
+            needed = sum(parts)
+            picks = []
+            for nm in names_rank:
+                if nm == new_gk: continue
+                if nm in picks: continue
+                picks.append(nm)
+                if len(picks) >= needed: break
+            new_assign = {}
+            idx = 0
+            for ln, count in enumerate(parts):
+                for sl in range(count):
+                    if idx < len(picks):
+                        new_assign[(ln, sl)] = picks[idx]; idx += 1
+            st.session_state[sk_assign] = new_assign
+            st.session_state[sk_ga] = {}
+            st.session_state[sk_gk] = new_gk
+            st.session_state[sk_sel] = None
+
+        if colB2.button("✨ Auto-Pick", key=f"{keypref}_autopick"):
+            _auto_pick(); st.rerun()
+
+        s = service()
+        if colB3.button("💾 Save lineup", key=f"{keypref}_save"):
+            if not s: st.error("Admin required.")
+            else:
+                s.table("lineups").delete().eq("match_id", mid).eq("team", team_name).execute()
+                rows = []
+                if st.session_state.get(sk_gk):
+                    rows.append({
+                        "id": str(uuid.uuid4()), "match_id": mid, "team": team_name,
+                        "player_id": None, "player_name": st.session_state[sk_gk], "name": st.session_state[sk_gk],
+                        "is_gk": True, "goals": 0, "assists": 0, "line": None, "slot": None, "position": None
+                    })
+                for (ln, sl), nm in st.session_state[sk_assign].items():
+                    g0,a0 = st.session_state[sk_ga].get((ln,sl), (0,0))
+                    rows.append({
+                        "id": str(uuid.uuid4()), "match_id": mid, "team": team_name,
+                        "player_id": None, "player_name": nm, "name": nm,
+                        "is_gk": False, "goals": int(g0), "assists": int(a0),
+                        "line": int(ln), "slot": int(sl), "position": None
+                    })
+                if rows:
+                    for i in range(0, len(rows), 500):
+                        s.table("lineups").insert(rows[i:i+500]).execute()
+                clear_caches(); st.success("Saved."); st.rerun()
+
+    # Pitch canvas (tap target)
+    with cPitch:
+        canvas_w = 360 if st.session_state.get("compact") else 720
+        canvas_h = int(canvas_w * 0.58)
+        bg = pitch_bg_image(canvas_w, canvas_h)
+        canvas_res = st_canvas(
+            fill_color="rgba(0,0,0,0)",
+            stroke_width=0,
+            background_color="#1a3c28",
+            background_image=bg,
+            height=canvas_h, width=canvas_w,
+            drawing_mode="point",
+            key=f"canvas_{keypref}"
+        )
+
+        # Handle clicks
+        if canvas_res.json_data is not None and selected:
+            objs = canvas_res.json_data.get("objects", [])
+            prev = int(st.session_state.get(sk_clicks, 0))
+            if len(objs) > prev:
+                pt = objs[-1]
+                px, py = float(pt.get("left", 0)), float(pt.get("top", 0))
+                x_pct = (px / canvas_w) * 100.0
+                y_pct = (py / canvas_h) * 100.0
+                coords = slot_centers_pct(parts, left_half=left_half)
+                best = None; best_d = 1e9
+                for (ln, sl, cx, cy) in coords:
+                    d = (cx - x_pct)**2 + (cy - y_pct)**2
+                    if d < best_d:
+                        best_d = d; best = (ln, sl)
+                if best is not None:
+                    old = None
+                    for k, v in list(assign.items()):
+                        if v == selected: old = k
+                    if old: del assign[old]
+                    if best in assign and assign[best] != selected and old:
+                        assign[old] = assign[best]
+                    assign[best] = selected
+                    st.session_state[sk_assign] = assign
+                    st.session_state[sk_clicks] = len(objs)
+                    st.rerun()
+
+    # Inline G/A per assigned slot
+    with cTop:
+        if assign:
+            st.caption(f"{team_name} — goals & assists per slot")
+            for ln, count in enumerate(parts):
+                cols = st.columns(count)
+                for sl in range(count):
+                    nm = assign.get((ln,sl))
+                    with cols[sl]:
+                        if nm:
+                            st.markdown(f"**{nm}**")
+                            g0,a0 = ga.get((ln,sl), (0,0))
+                            g = st.number_input("G", 0, 50, int(g0), key=f"{keypref}_g_{ln}_{sl}")
+                            a = st.number_input("A", 0, 50, int(a0), key=f"{keypref}_a_{ln}_{sl}")
+                            ga[(ln,sl)] = (int(g), int(a))
+                        else:
+                            st.write("—")
+            st.session_state[sk_ga] = ga
 
 # ------------------------------
 # Add Match
@@ -571,7 +844,7 @@ def page_matches():
 
     # Select Season & GW
     seasons = sorted(matches["season"].dropna().astype(int).unique().tolist())
-    colA, colB = st.columns(2)
+    colA, colB, colC = st.columns([1,2,2])
     sel_season = colA.selectbox("Season", seasons, index=len(seasons)-1, key="pm_season")
 
     msub = matches[matches["season"] == sel_season].copy().sort_values("gw")
@@ -579,6 +852,8 @@ def page_matches():
     id_map = {labels.iloc[i]: msub.iloc[i]["id"] for i in range(len(msub))}
     pick = colB.selectbox("Match", list(id_map.keys()), index=len(id_map)-1, key="pm_pick")
     mid = id_map[pick]
+    editor_mode = colC.radio("Editor", ["Tap", "Slot"], horizontal=True, key=f"pm_edit_{mid}")
+
     m = msub[msub["id"] == mid].iloc[0]
 
     # Lineups filtered
@@ -639,14 +914,23 @@ def page_matches():
     st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
     render_match_pitch_combined(a_rows, b_rows, fa_render, fb_render, m.get("motm_name"), m["team_a"], m["team_b"])
 
-    # Admin: slot-based lineup editor (easy)
+    # Admin: lineup editor (choose mode)
     if st.session_state.get("is_admin"):
-        with st.expander("🧩 Arrange lineup (slot editor)", expanded=False):
+        with st.expander("Arrange lineup (admin)", expanded=False):
+            lfact = build_fact(players, matches, lineups)
             colA, colB = st.columns(2)
-            with colA:
-                lineup_slots_editor("Non-bibs", mid, side_count, fa_render, a_rows, players, keypref=f"A_{mid}")
-            with colB:
-                lineup_slots_editor("Bibs", mid, side_count, fb_render, b_rows, players, keypref=f"B_{mid}")
+            if editor_mode == "Tap":
+                with colA:
+                    click_lineup_editor("Non-bibs", mid, side_count, fa_render, a_rows, players,
+                                        keypref=f"A_{mid}", left_half=True, lfact_for_auto=lfact)
+                with colB:
+                    click_lineup_editor("Bibs", mid, side_count, fb_render, b_rows, players,
+                                        keypref=f"B_{mid}", left_half=False, lfact_for_auto=lfact)
+            else:
+                with colA:
+                    lineup_slots_editor("Non-bibs", mid, side_count, fa_render, a_rows, players, keypref=f"A_{mid}")
+                with colB:
+                    lineup_slots_editor("Bibs", mid, side_count, fb_render, b_rows, players, keypref=f"B_{mid}")
 
 # ------------------------------
 # Players: cards + teammate/nemesis + ratings
@@ -666,17 +950,13 @@ def _percentile(series: pd.Series, v: float) -> float:
     return float((series <= v).mean() * 100)
 
 def _ratings_from_dataset(lfact: pd.DataFrame, mine: pd.DataFrame) -> Dict[str,int]:
-    # Dataset baselines
     if lfact.empty or mine.empty:
         return {"OVR": 50, "Shooting": 50, "Passing": 50, "Impact": 50}
-    # Player aggregates
     gp = mine["match_id"].nunique()
     goals = mine["goals"].sum(); assists = mine["assists"].sum()
-    ga = goals + assists
     gpg = goals / gp if gp else 0
     apg = assists / gp if gp else 0
     winp_p = (mine["result"].eq("W").mean() * 100.0) if gp else 0
-    # Dataset aggregates per-player
     agg = lfact.groupby("name").agg(
         GP=("match_id","nunique"),
         Goals=("goals","sum"),
@@ -686,11 +966,9 @@ def _ratings_from_dataset(lfact: pd.DataFrame, mine: pd.DataFrame) -> Dict[str,i
     agg["GPG"] = agg["Goals"]/agg["GP"].replace(0,np.nan)
     agg["APG"] = agg["Assists"]/agg["GP"].replace(0,np.nan)
     agg["Win%"] = (agg["Wins"]/agg["GP"].replace(0,np.nan))*100
-    # Percentiles
     p_shoot = _percentile(agg["GPG"], gpg)
     p_pass  = _percentile(agg["APG"], apg)
     p_imp   = _percentile(agg["Win%"], winp_p)
-    # Map percentiles -> FIFA-ish 40..92 range (avoid 99 spam)
     def map_rating(p): return int(round(40 + (p/100.0)*52))  # 40-92
     shooting = map_rating(p_shoot)
     passing  = map_rating(p_pass)
@@ -727,7 +1005,6 @@ def nemesis_table_for_player(lfact: pd.DataFrame, player: str, min_meetings: int
     out = out[out["name_x"] == player].rename(columns={"name_y":"Nemesis"})
     out["Win%"] = ((out["W"]/out["GP"]).replace(0,np.nan)*100).fillna(0).round(1)
     out = out[out["GP"] >= int(min_meetings)]
-    # Worst foes first: low Win% then high GP
     return out[["Nemesis","GP","W","D","L","Win%"]].sort_values(["Win%","GP"], ascending=[True,False])
 
 def page_players():
@@ -763,7 +1040,6 @@ def page_players():
 
     ratings = _ratings_from_dataset(lfact, mine)
 
-    # Avatar card + metrics
     pr = players[players["name"] == sel].iloc[0]
     avatar = pr.get("photo_url") or None
     av_html = (
@@ -941,7 +1217,7 @@ def page_stats():
             out = agg.sort_values(["G+A","Goals","Assists"], ascending=[False,False,False]).head(int(top_n))
         elif metric == "Team Contribution%":
             out = agg.sort_values(["Team Contrib%","G+A","GP"], ascending=[False,False,False]).head(int(top_n))
-        else:  # MOTM Count from matches
+        else:  # MOTM Count
             m = fetch_matches().copy()
             cnt = m["motm_name"].dropna().value_counts().rename_axis("name").reset_index(name="MOTM")
             out = agg.merge(cnt, on="name", how="left").fillna({"MOTM":0}).sort_values(["MOTM","G+A"], ascending=[False,False]).head(int(top_n))
