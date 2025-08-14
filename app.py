@@ -398,10 +398,10 @@ def sidebar_admin():
 def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: str,
                         lineup_df: pd.DataFrame, all_players: pd.DataFrame, keypref: str):
     """
-    Editor pattern:
-      - Select GK from dropdown
-      - For each line/slot in formation: select player (+ goals/assists boxes)
-      - Save button: delete-then-insert per (match_id, team)
+    Slot editor:
+      • Pick GK
+      • For each line/slot in formation, pick player + G/A
+      • Save = delete-then-insert for (match_id, team)
     """
     st.markdown(f"#### {team_name}")
     formation = validate_formation(formation, side_count)
@@ -411,44 +411,64 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
         parts = [1,2,1] if outfield_needed == 4 else [2,1,2,1]
         formation = "-".join(map(str, parts))
 
-    # Current names
+    def _to_int_or(v, default):
+        try:
+            if v is None or (hasattr(pd, "isna") and pd.isna(v)):  # handles NaN / pd.NA
+                return default
+            return int(v)
+        except Exception:
+            return default
+
+    # Current lineup -> names + (line, slot) + GA
     ld = normalize_lineup_names(lineup_df.copy())
-    current_gk = ld[ld["is_gk"] == True]["name"].tolist()
-    current_assign = {(int(r.get("line") or -1), int(r.get("slot") or -1)): r["name"] for _, r in ld[ld["is_gk"] != True].iterrows()}
-    # Pre-populate goals/assists per slot
-    current_ga = {(int(r.get("line") or -1), int(r.get("slot") or -1)): (int(r.get("goals") or 0), int(r.get("assists") or 0)) for _, r in ld[ld["is_gk"] != True].iterrows()}
+    current_gk = ld[ld["is_gk"] == True]["name"].dropna().astype(str).tolist()
+
+    current_assign = {}
+    current_ga = {}
+    for _, r in ld[ld["is_gk"] != True].iterrows():
+        ln = _to_int_or(r.get("line"), -1)
+        sl = _to_int_or(r.get("slot"), -1)
+        if ln >= 0 and sl >= 0:
+            nm = str(r.get("name") or r.get("player_name") or "").strip()
+            if nm:
+                current_assign[(ln, sl)] = nm
+                g = _to_int_or(r.get("goals"), 0)
+                a = _to_int_or(r.get("assists"), 0)
+                current_ga[(ln, sl)] = (g, a)
 
     pool = all_players["name"].dropna().astype(str).tolist()
 
     # GK picker
     st.caption("Goalkeeper")
     gk_default = current_gk[0] if current_gk else "—"
-    gk_pick = st.selectbox("GK", ["—"] + pool, index=(["—"]+pool).index(gk_default) if gk_default in (["—"]+pool) else 0, key=f"{keypref}_gk")
+    gk_options = ["—"] + pool
+    gk_idx = gk_options.index(gk_default) if gk_default in gk_options else 0
+    gk_pick = st.selectbox("GK", gk_options, index=gk_idx, key=f"{keypref}_gk")
 
     st.caption(f"Formation: **{formation}** (outfield)")
     # Build grid lines
-    slot_values: Dict[Tuple[int,int], str] = {}
-    goal_vals: Dict[Tuple[int,int], int] = {}
-    assist_vals: Dict[Tuple[int,int], int] = {}
-    used = set([gk_pick]) if gk_pick != "—" else set()
+    slot_values, goal_vals, assist_vals = {}, {}, {}
+    used = {gk_pick} if gk_pick != "—" else set()
 
     for line_idx, count in enumerate(parts):
         st.write(f"Line {line_idx} — {count} slots")
         cols = st.columns(count)
         for j in range(count):
             key_base = f"{keypref}_L{line_idx}_S{j}"
-            # candidate pool excluding used
+            # default assignment
             assigned_default = current_assign.get((line_idx, j), "—")
-            avail = ["—"] + [n for n in pool if n not in used or n == assigned_default]
-            sel = cols[j].selectbox("Player", avail, index=(avail.index(assigned_default) if assigned_default in avail else 0), key=f"{key_base}_sel")
+            # keep already-assigned name available in dropdown even if "used"
+            avail = ["—"] + [n for n in pool if (n not in used or n == assigned_default)]
+            sel_idx = avail.index(assigned_default) if assigned_default in avail else 0
+            sel = cols[j].selectbox("Player", avail, index=sel_idx, key=f"{key_base}_sel")
             slot_values[(line_idx, j)] = sel
             if sel != "—": used.add(sel)
-            # GA inputs
-            g0,a0 = current_ga.get((line_idx,j), (0,0))
+
+            g0, a0 = current_ga.get((line_idx, j), (0, 0))
             g = cols[j].number_input("G", 0, 50, int(g0), key=f"{key_base}_g")
             a = cols[j].number_input("A", 0, 50, int(a0), key=f"{key_base}_a")
-            goal_vals[(line_idx,j)] = int(g)
-            assist_vals[(line_idx,j)] = int(a)
+            goal_vals[(line_idx, j)] = int(g)
+            assist_vals[(line_idx, j)] = int(a)
 
     if st.button(f"💾 Save lineup for {team_name}", key=f"{keypref}_save"):
         s = service()
@@ -458,6 +478,7 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
             # Delete existing team rows
             s.table("lineups").delete().eq("match_id", mid).eq("team", team_name).execute()
             rows = []
+
             # GK row (optional)
             if gk_pick != "—":
                 rows.append({
@@ -471,6 +492,7 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
                     "goals": 0, "assists": 0,
                     "line": None, "slot": None, "position": None
                 })
+
             # Outfield rows
             for (ln, sl), nm in slot_values.items():
                 if nm == "—": continue
@@ -482,17 +504,21 @@ def lineup_slots_editor(team_name: str, mid: str, side_count: int, formation: st
                     "player_name": nm,
                     "name": nm,
                     "is_gk": False,
-                    "goals": goal_vals[(ln,sl)],
-                    "assists": assist_vals[(ln,sl)],
+                    "goals": int(goal_vals[(ln, sl)]),
+                    "assists": int(assist_vals[(ln, sl)]),
                     "line": int(ln),
                     "slot": int(sl),
                     "position": None
                 })
+
             if rows:
-                # Chunk insert just in case
                 for i in range(0, len(rows), 500):
                     s.table("lineups").insert(rows[i:i+500]).execute()
-            clear_caches(); st.success("Lineup saved."); st.rerun()
+
+            clear_caches()
+            st.success("Lineup saved.")
+            st.rerun()
+
 
 # ------------------------------
 # Add Match
