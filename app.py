@@ -255,25 +255,28 @@ def header():
 
 # ---------- Pitch (no overlap) ----------
 def stat_pill(goals: int, assists: int) -> str:
-    """Premium GA chip: gold-accented monogram badges that always read well."""
-    chunks = []
+    """Premium GA chip: gold/blue monogram tags that read clearly on mobile."""
+    parts = []
     if (goals or 0) > 0:
-        chunks.append(f"<span class='i i-g'>G</span><strong>{int(goals)}</strong>")
+        parts.append(f"<span class='tag tag-g'>G</span><b>{int(goals)}</b>")
     if (assists or 0) > 0:
-        chunks.append(f"<span class='i i-a'>A</span><strong>{int(assists)}</strong>")
-    if not chunks:
+        parts.append(f"<span class='tag tag-a'>A</span><b>{int(assists)}</b>")
+    if not parts:
         return ""
-    return f"<span class='p-pill'>{'&nbsp;&nbsp;&nbsp;'.join(chunks)}</span>"
+    return f"<span class='pill'>{'&nbsp;&nbsp;&nbsp;'.join(parts)}</span>"
 
 
-def slot_html(x_pct: float, y_pct: float, name: str, motm: bool=False, pill: str = "") -> str:
-    """Player bubble + name + pill at fixed vertical stack."""
-    bubble_cls = "p-bubble motm" if motm else "p-bubble"
+def slot_html(x_pct: float, y_pct: float, name: str, *, motm: bool=False, pill: str = "", is_gk: bool=False) -> str:
+    """Player bubble + name + pill; GK has distinct style + GK chip."""
+    cls = "bubble"
+    if motm: cls += " motm"
+    if is_gk: cls += " gk"
     init = "".join([t[0] for t in name.split()[:2]]).upper() or "?"
+    gk_chip = "<span class='chip-gk'>GK</span>" if is_gk else ""
     return (
-        f"<div class='p-slot' style='left:{x_pct}%;top:{y_pct}%;'>"
-        f"  <div class='{bubble_cls}'><span class='p-init'>{init}</span></div>"
-        f"  <div class='p-name'>{name}</div>"
+        f"<div class='slot' style='left:{x_pct}%;top:{y_pct}%;'>"
+        f"  <div class='{cls}'><span class='init'>{init}</span>{gk_chip}</div>"
+        f"  <div class='name'>{name}</div>"
         f"  {pill}"
         f"</div>"
     )
@@ -282,76 +285,103 @@ def slot_html(x_pct: float, y_pct: float, name: str, motm: bool=False, pill: str
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
                  show_stats: bool = True, show_photos: bool = True):
     """
-    FotMob-style pitch: lighter, premium look + scoped CSS so it never breaks.
-    Uses _ensure_positions(...) so line/slot are always valid.
+    Modern FotMob-style pitch:
+    - Real pitch lines (halfway, center circle, penalty boxes, goals).
+    - Lighter premium green.
+    - GK clearly distinguished with a GK chip + different bubble.
+    - Inline scoped CSS so it never depends on external files.
     """
-    # Scoped inline CSS (lighter pitch + gold accents)
-    pitch_css = """
+    # Scoped CSS (only for this pitch)
+    css = """
     <style>
-    .pitch{
-      position:relative;width:100%;padding-top:150%;
+    .pitchM{position:relative;width:100%;padding-top:150%;border-radius:18px;overflow:hidden;
       background:
-        radial-gradient(1200px 800px at 50% -20%, #12161b 0%, #10151a 45%, #0f1418 100%),
-        repeating-linear-gradient(180deg, rgba(255,255,255,.03) 0 10px, rgba(255,255,255,0) 10px 28px);
-      border-radius:20px;border:1px solid #233041;overflow:hidden
+        radial-gradient(1200px 800px at 50% -35%, #2d6f3d 0%, #1f5a31 45%, #174b28 100%),
+        repeating-linear-gradient(0deg, rgba(255,255,255,.06) 0 14px, rgba(255,255,255,0) 14px 30px);
+      border:1px solid rgba(255,255,255,.16)}
+    .inner{position:absolute;inset:10px;border-radius:14px}
+
+    /* Lines layer sized in percent of inner box */
+    .lines{position:absolute;left:4%;top:4%;right:4%;bottom:4%}
+    .outline{position:absolute;inset:0;border:2px solid #ffffff}
+    .halfway{position:absolute;left:0;right:0;top:50%;height:0;border-top:2px solid #ffffff}
+    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:22%;height:22%;
+      border:2px solid #ffffff;border-radius:999px}
+    .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+
+    /* Penalty boxes & goals (top is defending side) */
+    .box-top{position:absolute;left:18%;right:18%;top:0;height:22%;border:2px solid #ffffff;border-top:none}
+    .six-top{position:absolute;left:33%;right:33%;top:0;height:10.5%;border:2px solid #ffffff;border-top:none}
+    .pen-dot-top{position:absolute;left:50%;top:14%;transform:translate(-50%,-50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+    .goal-top{position:absolute;left:44%;right:44%;top:-1.4%;height:1.4%;border:2px solid #ffffff;border-bottom:none}
+
+    .box-bot{position:absolute;left:18%;right:18%;bottom:0;height:22%;border:2px solid #ffffff;border-bottom:none}
+    .six-bot{position:absolute;left:33%;right:33%;bottom:0;height:10.5%;border:2px solid #ffffff;border-bottom:none}
+    .pen-dot-bot{position:absolute;left:50%;bottom:14%;transform:translate(-50%,50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+    .goal-bot{position:absolute;left:44%;right:44%;bottom:-1.4%;height:1.4%;border:2px solid #ffffff;border-top:none}
+
+    /* Player layout */
+    .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.36rem;text-align:center}
+    .bubble{
+      width:clamp(54px, 6.6vw, 72px); height:clamp(54px, 6.6vw, 72px);
+      border-radius:999px; display:flex; align-items:center; justify-content:center; position:relative;
+      background:linear-gradient(180deg,#0e1620,#0b131b); border:2px solid #2f4860; box-shadow:0 6px 16px rgba(0,0,0,.35)
     }
-    .pitch-inner{position:absolute;inset:10px;border-radius:16px}
-    .pitch-line{position:absolute;left:6%;right:6%;border-top:1px solid rgba(255,255,255,.10)}
-    .p-slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.34rem; text-align:center}
-    .p-bubble{
-      width:66px;height:66px;border-radius:999px;display:flex;align-items:center;justify-content:center;
-      background:linear-gradient(180deg,#0f1720,#0b1219);border:2px solid #2c3e52;box-shadow:0 4px 16px rgba(0,0,0,.35)
+    .bubble.motm{ border-color:#D4AF37; box-shadow:0 0 0 2px rgba(212,175,55,.22), 0 10px 22px rgba(212,175,55,.16) }
+    .bubble.gk{ background:linear-gradient(180deg,#0c1e2b,#0a1924); border-color:#4db6ff }
+    .chip-gk{
+      position:absolute; right:-6px; top:-6px; padding:.15rem .35rem; font-size:.68rem; font-weight:900;
+      border-radius:8px; background:rgba(77,182,255,.18); color:#bfe6ff; border:1px solid rgba(77,182,255,.45)
     }
-    .p-bubble.motm{border-color:#D4AF37;box-shadow:0 0 0 2px rgba(212,175,55,.22),0 10px 24px rgba(212,175,55,.18)}
-    .p-init{font-weight:800;letter-spacing:.3px;color:#eef6ff;font-size:1.02rem}
-    .p-name{font-size:.95rem;font-weight:800;color:#E9EEF3;text-shadow:0 1px 0 rgba(0,0,0,.6); max-width:120px}
-    .p-pill{
-      display:inline-flex;align-items:center;gap:.55rem;padding:.26rem .6rem;
-      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:999px;
-      font-size:.95rem
-    }
-    .i{
+    .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.95rem,1.1vw,1.05rem)}
+    .name{font-size:clamp(.88rem,1.05vw,1rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:140px}
+
+    /* G/A pill */
+    .pill{display:inline-flex;align-items:center;gap:.6rem; padding:.28rem .65rem; border-radius:999px;
+      background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); font-size:clamp(.9rem,1vw,.98rem)}
+    .tag{
       display:inline-flex;align-items:center;justify-content:center;
-      width:18px;height:18px;border-radius:4px;font-size:.75rem;font-weight:900;
-      border:1px solid rgba(255,255,255,.25)
+      width:20px;height:20px;border-radius:5px;font-size:.76rem;font-weight:900;border:1px solid rgba(255,255,255,.3)
     }
-    .i-g{color:#D4AF37;background:rgba(212,175,55,.12);border-color:rgba(212,175,55,.45)}
-    .i-a{color:#86c7ff;background:rgba(134,199,255,.12);border-color:rgba(134,199,255,.45)}
+    .tag-g{ color:#D4AF37; background:rgba(212,175,55,.15); border-color:rgba(212,175,55,.55) }
+    .tag-a{ color:#86c7ff; background:rgba(134,199,255,.15); border-color:rgba(134,199,255,.55) }
     </style>
     """
 
-    # Sanitize positions
+    # Sanitize + layout
     rows = _ensure_positions(rows, formation)
-    parts = formation_to_lines(formation)
-    if not parts:
-        parts = [1, 2, 1]
+    parts = formation_to_lines(formation) or [1,2,1]
 
-    # layout constants
-    top_margin = 12
-    bottom_margin = 10
+    top_margin = 14   # more space for GK + top goal
+    bottom_margin = 12
     inner_h = 100 - top_margin - bottom_margin
     n_lines = max(1, len(parts))
     max_slots = max(parts + [1])
 
-    # Build HTML
-    html = [pitch_css, "<div class='pitch'><div class='pitch-inner'>"]
+    html = [css, "<div class='pitchM'><div class='inner'>",
+            "<div class='lines'>"
+            "<div class='outline'></div>"
+            "<div class='halfway'></div>"
+            "<div class='center'></div>"
+            "<div class='center-dot'></div>"
+            "<div class='box-top'></div><div class='six-top'></div><div class='pen-dot-top'></div><div class='goal-top'></div>"
+            "<div class='box-bot'></div><div class='six-bot'></div><div class='pen-dot-bot'></div><div class='goal-bot'></div>"
+            "</div>"]
 
-    # guide lines
-    for i in range(n_lines + 1):
-        y = top_margin + (inner_h / (n_lines + 1)) * (i + 0.5)
-        html.append(f"<div class='pitch-line' style='top:{y}%'></div>")
-
-    # GK at top center (if any)
-    gk = rows[rows.get("is_gk") == True] if "is_gk" in rows.columns else pd.DataFrame()
+    # GK = at top penalty area center by default (clear, near goal)
+    gk = rows[(rows.get("is_gk") == True)] if "is_gk" in rows.columns else pd.DataFrame()
     if not gk.empty:
         r = gk.iloc[0]
         nm = str(r.get("name") or r.get("player_name") or "")
-        y = top_margin * 0.45
+        y = top_margin * 0.65        # close to the top box
         x = 50
         pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
-        html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill))
+        html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill, is_gk=True))
 
-    # Outfield rows
+    # Outfield rows (defence to attack)
     for line_idx, slots in enumerate(parts):
         y = top_margin + inner_h * ((line_idx + 0.5) / n_lines)
         x_gap = 100 / (slots + 1)
@@ -363,10 +393,10 @@ def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], t
             p = line_df[line_df.get("slot") == abs_slot].head(1)
             if len(p) == 0:
                 continue
-            r = p.iloc[0]
-            nm = str(r.get("name") or r.get("player_name") or "")
-            pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
-            html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill))
+            rr = p.iloc[0]
+            nm = str(rr.get("name") or rr.get("player_name") or "")
+            pill = stat_pill(int(rr.get("goals") or 0), int(rr.get("assists") or 0)) if show_stats else ""
+            html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill, is_gk=False))
 
     html.append("</div></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
