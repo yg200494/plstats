@@ -466,23 +466,44 @@ def dnd_lineup_editor(team_rows: pd.DataFrame, formation: str, team_label: str, 
     return _apply_dnd_result(out, formation)
 
 # ---------------------------------
-# Admin/auth header
+# Admin/auth header  (popover-safe)
 # ---------------------------------
 def header():
     left, right = st.columns([1,1])
-    with left: st.title("⚽ Powerleague Stats")
+    with left:
+        st.title("⚽ Powerleague Stats")
+
     with right:
+        # ensure state exists
         if "is_admin" not in st.session_state:
             st.session_state["is_admin"] = False
+
         if st.session_state["is_admin"]:
             st.success("Admin mode", icon="🔐")
-            if st.button("Logout", key="btn_logout"): st.session_state["is_admin"] = False; st.rerun()
+            if st.button("Logout", key="btn_logout"):
+                st.session_state["is_admin"] = False
+                st.rerun()
         else:
-            with st.popover("Admin login", key="pop_admin"):
-                pw = st.text_input("Password", type="password", key="admin_pw")
-                if st.button("Login", key="admin_login"):
-                    if pw == ADMIN_PASSWORD: st.session_state["is_admin"] = True; st.rerun()
-                    else: st.error("Invalid password")
+            # Use popover if available, otherwise fall back to expander (works on older Streamlit)
+            if hasattr(st, "popover"):
+                with st.popover("🔑 Admin login"):  # no key to avoid older builds tripping on element id
+                    pw = st.text_input("Password", type="password", key="admin_pw")
+                    if st.button("Login", key="admin_login"):
+                        if pw == ADMIN_PASSWORD:
+                            st.session_state["is_admin"] = True
+                            st.rerun()
+                        else:
+                            st.error("Invalid password")
+            else:
+                with st.expander("🔑 Admin login", expanded=False):
+                    pw = st.text_input("Password", type="password", key="admin_pw")
+                    if st.button("Login", key="admin_login"):
+                        if pw == ADMIN_PASSWORD:
+                            st.session_state["is_admin"] = True
+                            st.rerun()
+                        else:
+                            st.error("Invalid password")
+
 
 # ---------------------------------
 # Matches Page
