@@ -1,17 +1,9 @@
-# app.py — Powerleague Stats (Drag & Drop Final)
-# - Pitch: centered, FotMob-style, team-colored rings, modern chips, MOTM star
-# - Matches: dropdown selector, add/update matches (past & future), inline G/A + MOTM editor
-# - Drag & Drop lineup editor (GK + per-slot containers) -> saves is_gk/line/slot
-# - Stats: dropdown metrics (incl. duos/nemesis) + Season/Min Games/Last N/Top N filters
-# - Player Profile: hero, cards, streaks, last-N, duos & nemesis
-# - Player Manager: add/edit/rename player, upload JPG/PNG/HEIC -> square PNG to Supabase Storage
-# - Admin writes guarded by ADMIN_PASSWORD + SERVICE KEY
-
+# app.py — Powerleague Stats (Final: on-pitch drag & drop)
 from __future__ import annotations
 import io
 import base64
 import datetime as dt
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 import numpy as np
 import pandas as pd
@@ -27,6 +19,19 @@ try:
 except Exception:
     pass
 
+# Optional DnD components
+try:
+    from streamlit_elements import elements, mui, html, dashboard
+    _PITCH_DND_AVAILABLE = True
+except Exception:
+    _PITCH_DND_AVAILABLE = False
+
+try:
+    from streamlit_sortables import sort_items as _sort_items
+    _LIST_DND_AVAILABLE = True
+except Exception:
+    _LIST_DND_AVAILABLE = False
+
 # ---------------------------------
 # App config + CSS
 # ---------------------------------
@@ -37,7 +42,33 @@ def load_css():
         with open("styles/styles.css", "r", encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
     except Exception:
-        pass
+        # minimal built-in styles to look decent even without external CSS
+        st.markdown("""
+        <style>
+        .pl-banner{display:flex;align-items:center;justify-content:space-between;background:#0d1f17;color:#e8fff5;border-radius:14px;padding:12px 16px;margin:8px 0;}
+        .pl-banner.slim{justify-content:flex-start;gap:10px;background:#113a2a;padding:8px 12px;}
+        .pl-title{font-weight:700;font-size:1.1rem}
+        .pl-sub{opacity:.8;font-size:.85rem}
+        .pl-badge{background:#ffd166;color:#202020;border-radius:999px;padding:2px 10px;font-weight:600}
+        .pl-pitch{position:relative;width:100%;padding-top:150%;border-radius:16px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+        .pl-pitch svg{position:absolute;inset:0;width:100%;height:100%}
+        .pl-spot{position:absolute;transform:translate(-50%,-50%);text-align:center;min-width:64px}
+        .pl-avatar{width:56px;height:56px;border:3px solid #d0eadc;border-radius:50%;overflow:hidden;margin:0 auto;background:#133f2c;position:relative}
+        .pl-avatar-img{width:100%;height:100%;object-fit:cover}
+        .pl-avatar-init{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#dff7ec;font-weight:800;font-family:system-ui, sans-serif}
+        .pl-motm{position:absolute;top:-8px;right:-8px;background:#ffd166;color:#000;border-radius:50%;font-size:12px;line-height:1;padding:2px 6px;border:2px solid #1b7a47}
+        .pl-name{margin-top:4px;color:#f5fff8;text-shadow:0 1px 2px rgba(0,0,0,.6);font-weight:700;font-size:.9rem}
+        .pl-chips{display:flex;gap:6px;margin-top:2px;justify-content:center}
+        .pl-chip{background:#ffffff;color:#1b1b1b;border-radius:999px;padding:1px 8px;font-weight:700;font-size:.75rem;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+        .pl-chip-g{background:#e6fff0}
+        .pl-chip-a{background:#e6f0ff}
+        .pl-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:8px 0}
+        .pl-card{background:#0f231b;color:#dff7ec;border-radius:12px;padding:10px 12px;border:1px solid #1b3b2d}
+        .pl-card-val{font-size:1.2rem;font-weight:800}
+        .pl-card-lbl{opacity:.85;font-size:.8rem}
+        .pl-avatar.pl-large{width:160px;height:160px;border-width:5px}
+        </style>
+        """, unsafe_allow_html=True)
 
 load_css()
 
@@ -118,7 +149,7 @@ def formation_to_lines(form: str | None) -> List[int]:
         return [1,2,1]
 
 def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Join lineup rows with match metadata; unify season/gw columns; derive results."""
+    """Join lineup rows with match metadata; unify season/gw; derive results."""
     if matches.empty or lineups.empty:
         return pd.DataFrame(columns=[
             "match_id","season","gw","date","team","team_a","team_b","score_a","score_b","is_draw",
@@ -247,7 +278,7 @@ def compute_streak(series_vals, predicate):
     return count
 
 # ---------------------------------
-# Pitch rendering
+# Pitch rendering (summary)
 # ---------------------------------
 def _pitch_svg() -> str:
     return """
@@ -270,14 +301,12 @@ def _pitch_svg() -> str:
     """
 
 def _avatar_html(name: str, photo_url: Optional[str], team: str, motm: bool) -> str:
-    border = TEAM_COLORS.get(team, "#ddd")
     if photo_url and str(photo_url).strip():
         img = f"<img src='{photo_url}' class='pl-avatar-img' />"
     else:
-        init = initials(name)
-        img = f"<div class='pl-avatar-init'>{init}</div>"
+        img = f"<div class='pl-avatar-init'>{initials(name)}</div>"
     star = "<div class='pl-motm'>★</div>" if motm else ""
-    return f"<div class='pl-avatar' style='border-color:{border};'>{img}{star}</div>"
+    return f"<div class='pl-avatar'>{img}{star}</div>"
 
 def _ensure_positions(team_df: pd.DataFrame, formation: str) -> pd.DataFrame:
     rows = team_df.copy()
@@ -321,7 +350,6 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
     total_rows = len(parts)+1  # + GK row
-
     TOP_PAD = 18
     BOT_PAD = 18
 
@@ -331,7 +359,7 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
         usable = 100.0 - TOP_PAD - BOT_PAD
         return TOP_PAD + usable * (i / (total_rows - 1))
 
-    html = [f"<div class='pl-pitch'>{_pitch_svg()}"]
+    html_out = [f"<div class='pl-pitch'>{_pitch_svg()}"]
     for _, r in rows.iterrows():
         is_gk = bool(r.get("is_gk"))
         row_idx = len(parts) if is_gk else int(r.get("line"))
@@ -353,25 +381,121 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
         if show_stats and a>0: chips.append(f"<div class='pl-chip pl-chip-a'>🅰 {a}</div>")
         chips_html = f"<div class='pl-chips'>{''.join(chips)}</div>" if chips else ""
 
-        html.append(
+        html_out.append(
             f"<div class='pl-spot' style='left:{x}%;top:{y}%;'>"
             f"{avatar}"
             f"<div class='pl-name'>{name}</div>"
             f"{chips_html}"
             f"</div>"
         )
-    html.append("</div>")
-    st.markdown("".join(html), unsafe_allow_html=True)
+    html_out.append("</div>")
+    st.markdown("".join(html_out), unsafe_allow_html=True)
 
 # ---------------------------------
-# Drag & Drop support (optional)
+# On-pitch Drag & Drop editor (streamlit-elements)
 # ---------------------------------
-try:
-    from streamlit_sortables import sort_items as _sort_items
-    _DND_AVAILABLE = True
-except Exception:
-    _DND_AVAILABLE = False
+def _line_abs_to_grid(parts: List[int], line: Optional[int], slot_abs: Optional[int], cols: int = 24):
+    """Map stored (line, absolute slot) -> grid (x,y)."""
+    if line is None:  # GK
+        y = 2*len(parts)+3
+        x = cols//2
+        return max(0, min(cols-1, x)), y
+    max_slots = max(parts+[1])
+    line = int(max(0, min(len(parts)-1, int(line))))
+    slots = parts[line]
+    centers = [round(cols * (j+1)/(slots+1)) for j in range(slots)]
+    offset = (max_slots - slots)//2
+    rel = int(slot_abs) - offset if slot_abs is not None else (slots-1)//2
+    rel = max(0, min(slots-1, rel))
+    x = centers[rel]
+    y = 2 + 2*line
+    return max(0, min(cols-1, x)), y
 
+def _grid_to_line_abs(parts: List[int], x: int, y: int, cols: int = 24):
+    """Map grid (x,y) back to (is_gk, line, abs_slot)."""
+    out_rows = [2 + 2*i for i in range(len(parts))]
+    gk_y = 2*len(parts)+3
+    if not out_rows or abs(y - gk_y) < min([abs(y - yy) for yy in out_rows]+[1e9]):
+        return True, None, None
+    # nearest outfield row
+    line = int(min(range(len(parts)), key=lambda i: abs(out_rows[i]-y)))
+    slots = parts[line]
+    centers = [round(cols * (j+1)/(slots+1)) for j in range(slots)]
+    rel = int(min(range(slots), key=lambda j: abs(centers[j]-x)))
+    max_slots = max(parts+[1])
+    offset = (max_slots - slots)//2
+    abs_slot = offset + rel
+    return False, line, abs_slot
+
+def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
+    """Render on-pitch drag & drop; returns list of updates (dicts) or None if component missing."""
+    if not _PITCH_DND_AVAILABLE:
+        return None
+
+    parts = formation_to_lines(formation)
+    rows = _ensure_positions(team_rows, formation)
+    cols = 24
+    layout = []
+    card_keys = []
+    # Create layout items for each player
+    for _, r in rows.iterrows():
+        pid = str(r["id"])
+        line = None if bool(r.get("is_gk")) else int(r.get("line"))
+        slot_abs = None if bool(r.get("is_gk")) else int(r.get("slot"))
+        gx, gy = _line_abs_to_grid(parts, line, slot_abs, cols=cols)
+        # Each item gets width=2 grid cells to make grabbing easier on mobile
+        layout.append(dashboard.Item(f"{keypref}_{pid}", gx, gy, 2, 2, isResizable=False))
+        card_keys.append((pid, r))
+
+    # Callback to store updated layout into session state
+    state_key = f"layout_{keypref}_{mid}"
+    def _on_change(updated_layout: List[dict]):
+        st.session_state[state_key] = updated_layout
+
+    # Render dashboard with player chips
+    with elements(f"el_{keypref}_{mid}"):
+        with dashboard.Grid(layout, cols=cols, rowHeight=22, preventCollision=True, compact=False, onLayoutChange=_on_change):
+            for pid, r in card_keys:
+                name = r.get("name") or r.get("player_name") or ""
+                g = int(r.get("goals") or 0); a = int(r.get("assists") or 0)
+                is_motm = False  # purely visual in editor
+                # a neat, high-contrast chip
+                with mui.Paper key=f"{keypref}_{pid}" elevation=4 sx={
+                    "borderRadius": 2, "p": 0.5, "textAlign": "center",
+                    "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
+                }:
+                    with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
+                        # Initials bubble (consistent size)
+                        init = initials(name)
+                        mui.Box(init, sx={
+                            "width": 36, "height": 36, "borderRadius": "999px",
+                            "display": "flex", "alignItems": "center", "justifyContent": "center",
+                            "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
+                        })
+                        mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
+                    if g>0 or a>0:
+                        with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
+                            if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
+                            if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
+
+    # If we have updated layout in state, translate back to DB updates
+    updates = []
+    if state_key in st.session_state:
+        updated = st.session_state[state_key]
+        # Map from layout id -> (x,y)
+        locs: Dict[str, Tuple[int,int]] = {item["i"]: (item["x"], item["y"]) for item in updated}
+        for _, r in rows.iterrows():
+            pid = str(r["id"])
+            lid = f"{keypref}_{pid}"
+            if lid in locs:
+                x,y = locs[lid]
+                is_gk, line, abs_slot = _grid_to_line_abs(parts, x, y, cols=cols)
+                updates.append({"id": pid, "is_gk": bool(is_gk), "line": (None if is_gk else int(line)), "slot": (None if is_gk else int(abs_slot))})
+    return updates
+
+# ---------------------------------
+# List-based DnD fallback (streamlit-sortables)
+# ---------------------------------
 def _encode_item(row: pd.Series) -> str:
     return f"{row['id']}|{row.get('name') or row.get('player_name') or ''}"
 
@@ -379,7 +503,7 @@ def _decode_item(token: str) -> tuple[str, str]:
     pid, name = token.split("|", 1)
     return pid, name
 
-def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str, keyprefix: str):
+def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str):
     rows = _ensure_positions(team_rows, formation)
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
@@ -391,7 +515,6 @@ def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str, keyprefi
 
     containers = []
     containers.append({"header": "GK", "items": gk_items[:1]})
-
     placed_ids = set()
     for i, slots in enumerate(parts):
         offset = (max_slots - slots)//2
@@ -403,7 +526,6 @@ def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str, keyprefi
                 if int(r.get("line") or -1) == i and int(r.get("slot") or -999) == abs_slot:
                     items.append(_encode_item(r)); placed_ids.add(r["id"])
             containers.append({"header": header, "items": items})
-
     bench_items = []
     if len(gk_items) > 1:
         bench_items.extend(gk_items[1:])
@@ -414,31 +536,26 @@ def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str, keyprefi
     containers.append({"header":"Bench","items":bench_items})
     return containers
 
-def _apply_dnd_result(containers: list[dict], formation: str) -> list[dict]:
+def _apply_list_dnd(containers: list[dict], formation: str) -> list[dict]:
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
 
     updates = []
-
     def header_to_pos(h: str) -> tuple[int|None, int|None]:
         if h == "GK": return None, None
         if not h.startswith("R"): return None, None
-        try:
-            row_txt, slot_txt = h.split()
-            row_i = int(row_txt[1:]) - 1
-            rel_j = int(slot_txt[1:]) - 1
-            slots = parts[row_i]; offset = (max_slots - slots)//2
-            return row_i, offset + rel_j
-        except Exception:
-            return None, None
+        row_txt, slot_txt = h.split()
+        row_i = int(row_txt[1:]) - 1
+        rel_j = int(slot_txt[1:]) - 1
+        slots = parts[row_i]; offset = (max_slots - slots)//2
+        return row_i, offset + rel_j
 
     gk_set = set()
     for c in containers:
-        if c["header"] == "GK":
-            if c["items"]:
-                pid, _ = _decode_item(c["items"][0])
-                updates.append({"id": pid, "is_gk": True, "line": None, "slot": None})
-                gk_set.add(pid)
+        if c["header"] == "GK" and c["items"]:
+            pid, _ = _decode_item(c["items"][0])
+            updates.append({"id": pid, "is_gk": True, "line": None, "slot": None})
+            gk_set.add(pid)
 
     for c in containers:
         h = c["header"]
@@ -453,20 +570,15 @@ def _apply_dnd_result(containers: list[dict], formation: str) -> list[dict]:
         seen[u["id"]] = u
     return list(seen.values())
 
-def dnd_lineup_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
-    if not _DND_AVAILABLE:
-        st.info("Install `streamlit-sortables` to enable drag & drop. Falling back to manual editing.")
+def dnd_list_editor(team_rows: pd.DataFrame, formation: str, keypref: str, mid: str):
+    if not _LIST_DND_AVAILABLE:
         return None
-    containers = _containers_from_team_rows(team_rows, formation, keypref)
-    st.caption(f"Drag players into **GK** or any slot (formation {formation}).")
+    containers = _containers_from_team_rows(team_rows, formation)
     out = _sort_items(containers, multi_containers=True, key=f"{keypref}_{mid}")
-    bench = next((c for c in out if c["header"]=="Bench"), {"items":[]})
-    if bench["items"]:
-        st.warning("Players in **Bench** keep their previous positions unless you assign them to a slot.")
-    return _apply_dnd_result(out, formation)
+    return _apply_list_dnd(out, formation)
 
 # ---------------------------------
-# Admin/auth header  (popover-safe)
+# Admin/auth header (popover-safe)
 # ---------------------------------
 def header():
     left, right = st.columns([1,1])
@@ -474,7 +586,6 @@ def header():
         st.title("⚽ Powerleague Stats")
 
     with right:
-        # ensure state exists
         if "is_admin" not in st.session_state:
             st.session_state["is_admin"] = False
 
@@ -484,26 +595,14 @@ def header():
                 st.session_state["is_admin"] = False
                 st.rerun()
         else:
-            # Use popover if available, otherwise fall back to expander (works on older Streamlit)
-            if hasattr(st, "popover"):
-                with st.popover("🔑 Admin login"):  # no key to avoid older builds tripping on element id
-                    pw = st.text_input("Password", type="password", key="admin_pw")
-                    if st.button("Login", key="admin_login"):
-                        if pw == ADMIN_PASSWORD:
-                            st.session_state["is_admin"] = True
-                            st.rerun()
-                        else:
-                            st.error("Invalid password")
-            else:
-                with st.expander("🔑 Admin login", expanded=False):
-                    pw = st.text_input("Password", type="password", key="admin_pw")
-                    if st.button("Login", key="admin_login"):
-                        if pw == ADMIN_PASSWORD:
-                            st.session_state["is_admin"] = True
-                            st.rerun()
-                        else:
-                            st.error("Invalid password")
-
+            with st.expander("🔑 Admin login", expanded=False):
+                pw = st.text_input("Password", type="password", key="admin_pw")
+                if st.button("Login", key="admin_login"):
+                    if pw == ADMIN_PASSWORD:
+                        st.session_state["is_admin"] = True
+                        st.rerun()
+                    else:
+                        st.error("Invalid password")
 
 # ---------------------------------
 # Matches Page
@@ -627,6 +726,7 @@ def page_matches():
         fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
         fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
 
+    # Summary pitches (pretty, read-only)
     c1, c2 = st.columns(2)
     with c1:
         st.caption(m["team_a"])
@@ -654,26 +754,26 @@ def page_matches():
 
                 st.markdown("#### Non-bibs")
                 for _, r in a_rows.sort_values("name").iterrows():
-                    c1,c2,c3,c4 = st.columns([3,1,1,1])
-                    c1.write(r["name"])
-                    g_in = int(c2.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
-                    a_in = int(c3.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
-                    if c4.button("Save", key=f"save_{r['id']}"):
+                    c1_,c2_,c3_,c4_ = st.columns([3,1,1,1])
+                    c1_.write(r["name"])
+                    g_in = int(c2_.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
+                    a_in = int(c3_.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
+                    if c4_.button("Save", key=f"save_{r['id']}"):
                         s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
                         clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
 
                 st.markdown("#### Bibs")
                 for _, r in b_rows.sort_values("name").iterrows():
-                    c1,c2,c3,c4 = st.columns([3,1,1,1])
-                    c1.write(r["name"])
-                    g_in = int(c2.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
-                    a_in = int(c3.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
-                    if c4.button("Save", key=f"save_{r['id']}"):
+                    c1_,c2_,c3_,c4_ = st.columns([3,1,1,1])
+                    c1_.write(r["name"])
+                    g_in = int(c2_.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
+                    a_in = int(c3_.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
+                    if c4_.button("Save", key=f"save_{r['id']}"):
                         s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
                         clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
 
-        # Drag & Drop positions (per team)
-        with st.expander("🧲 Drag & drop lineup (beta)", expanded=False):
+        # On-pitch Drag & Drop editor first; fallback to list-DnD; then manual
+        with st.expander("🧲 Drag & drop lineup (on-pitch)", expanded=False):
             s = service()
             if not s:
                 st.info("Login as admin.")
@@ -682,11 +782,24 @@ def page_matches():
                 colA, colB = st.columns(2)
                 with colA:
                     st.markdown(f"**{m['team_a']}**")
-                    upd_a = dnd_lineup_editor(a_rows, fa, m["team_a"], keypref=f"dndA", mid=mid)
+                    if _PITCH_DND_AVAILABLE:
+                        upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref=f"A", mid=mid)
+                    elif _LIST_DND_AVAILABLE:
+                        st.caption("On-pitch DnD unavailable. Using list-based DnD.")
+                        upd_a = dnd_list_editor(a_rows, fa, keypref="dndA", mid=mid)
+                    else:
+                        st.info("Install `streamlit-elements` or `streamlit-sortables` for DnD. Use Goals/Assists editor above meanwhile.")
+                        upd_a = None
                     if upd_a: updates.extend(upd_a)
                 with colB:
                     st.markdown(f"**{m['team_b']}**")
-                    upd_b = dnd_lineup_editor(b_rows, fb, m["team_b"], keypref=f"dndB", mid=mid)
+                    if _PITCH_DND_AVAILABLE:
+                        upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref=f"B", mid=mid)
+                    elif _LIST_DND_AVAILABLE:
+                        st.caption("On-pitch DnD unavailable. Using list-based DnD.")
+                        upd_b = dnd_list_editor(b_rows, fb, keypref="dndB", mid=mid)
+                    else:
+                        upd_b = None
                     if upd_b: updates.extend(upd_b)
 
                 if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
