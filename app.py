@@ -114,6 +114,43 @@ def validate_formation(formation: Optional[str], side_count: int) -> str:
     if sum(parts) != outfield_needed or not parts or any(p <= 0 for p in parts):
         return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
     return "-".join(str(p) for p in parts)
+def render_admin_formations(m: pd.Series, mid: str, key_prefix: str = "pm"):
+    """Admin-only: choose and save formations with 5s/7s validation."""
+    if not st.session_state.get("is_admin"):
+        return
+
+    presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
+    presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
+    side_count = int(m.get("side_count") or 5)
+    options = presets7 if side_count == 7 else presets5
+
+    colf1, colf2, colf3 = st.columns([2, 2, 1])
+    fa = colf1.selectbox(
+        "Formation (Non-bibs)",
+        options,
+        index=(options.index(m.get("formation_a")) if m.get("formation_a") in options else 0),
+        key=f"{key_prefix}_fa_{mid}",
+    )
+    fb = colf2.selectbox(
+        "Formation (Bibs)",
+        options,
+        index=(options.index(m.get("formation_b")) if m.get("formation_b") in options else 0),
+        key=f"{key_prefix}_fb_{mid}",
+    )
+
+    if colf3.button("Save formations", key=f"{key_prefix}_save_forms_{mid}"):
+        s = service()
+        if not s:
+            st.error("Admin required.")
+        else:
+            fa_s = validate_formation(fa, side_count)
+            fb_s = validate_formation(fb, side_count)
+            s.table("matches").update(
+                {"formation_a": fa_s, "formation_b": fb_s}
+            ).eq("id", mid).execute()
+            clear_caches()
+            st.success("Formations updated.")
+            st.rerun()
 
 
 # ---------- Caching helpers ----------
@@ -721,7 +758,10 @@ def page_matches():
     sel_season = st.selectbox("Season", seasons, index=len(seasons)-1, key=f"{k}_season")
 
     msub = matches[matches["season"] == sel_season].copy().sort_values("gw")
-    labels = msub.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}", axis=1)
+    labels = msub.apply(
+        lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}",
+        axis=1
+    )
     id_map = {labels.iloc[i]: msub.iloc[i]["id"] for i in range(len(msub))}
     pick = st.selectbox("Match", list(id_map.keys()), index=len(id_map)-1, key=f"{k}_pick")
     mid = id_map[pick]
@@ -732,7 +772,7 @@ def page_matches():
     b_rows = lineups[(lineups["match_id"] == mid) & (lineups["team"] == "Bibs")].copy()
 
     # ---- header banner
-    lcol, ccol, rcol = st.columns([3,2,3])
+    lcol, ccol, rcol = st.columns([3, 2, 3])
     with lcol:
         st.markdown(f"### **{m['team_a']}**")
     with ccol:
@@ -743,42 +783,10 @@ def page_matches():
     with rcol:
         st.markdown(f"### **{m['team_b']}**")
 
-    # ---- admin formation picker (properly indented; unique keys)
-    if st.session_state.get("is_admin"):
-        presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
-        presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
+    # ---- admin formation picker (separate helper to avoid indentation issues)
+    render_admin_formations(m, mid, key_prefix=k)
 
-        side_count = int(m.get("side_count") or 5)
-        options = presets7 if side_count == 7 else presets5
-
-        colf1, colf2, colf3 = st.columns([2, 2, 1])
-        fa = colf1.selectbox(
-            "Formation (Non-bibs)",
-            options,
-            index=(options.index(m.get("formation_a")) if m.get("formation_a") in options else 0),
-            key=f"{k}_fa_{mid}",
-        )
-        fb = colf2.selectbox(
-            "Formation (Bibs)",
-            options,
-            index=(options.index(m.get("formation_b")) if m.get("formation_b") in options else 0),
-            key=f"{k}_fb_{mid}",
-        )
-        if colf3.button("Save formations", key=f"{k}_save_forms_{mid}"):
-            s = service()
-            if not s:
-                st.error("Admin required.")
-            else:
-                fa_s = validate_formation(fa, side_count)
-                fb_s = validate_formation(fb, side_count)
-                s.table("matches").update(
-                    {"formation_a": fa_s, "formation_b": fb_s}
-                ).eq("id", mid).execute()
-                clear_caches()
-                st.success("Formations updated.")
-                st.rerun()
-
-    # ---- render combined pitch (side-oriented & compact)
+    # ---- render combined pitch (side-oriented & compact) with 5s/7s guard
     side_count = int(m.get("side_count") or 5)
     fa_render = validate_formation(m.get("formation_a"), side_count)
     fb_render = validate_formation(m.get("formation_b"), side_count)
@@ -787,6 +795,12 @@ def page_matches():
     render_match_pitch_combined(
         a_rows, b_rows, fa_render, fb_render, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
     )
+
+    # ---- optional: lineup editor below (unchanged)
+    # if st.session_state.get("is_admin"):
+    #     with st.expander("🧲 Arrange lineup", expanded=False):
+    #         upd_a = tap_pitch_editor(a_rows, fa_render, m["team_a"], keypref=f"A_{mid}", mid=mid)
+    #         upd_b = tap_pitch_editor(b_rows, fb_render, m["team_b"], keypref=f"B_{mid}", mid=mid)
 
     # ---- (optional) lineup editor expander stays below, if you have one:
     # if st.session_state.get("is_admin"):
