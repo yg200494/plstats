@@ -255,20 +255,21 @@ def header():
 
 # ---------- Pitch (no overlap) ----------
 def stat_pill(goals: int, assists: int) -> str:
-    """Compact GA chip, larger & readable."""
-    parts = []
-    if goals and goals > 0:
-        parts.append(f"{icon_svg('ball',16)}<strong>{int(goals)}</strong>")
-    if assists and assists > 0:
-        parts.append(f"{icon_svg('assist',16)}<strong>{int(assists)}</strong>")
-    if not parts:
+    """Premium GA chip: gold-accented monogram badges that always read well."""
+    chunks = []
+    if (goals or 0) > 0:
+        chunks.append(f"<span class='i i-g'>G</span><strong>{int(goals)}</strong>")
+    if (assists or 0) > 0:
+        chunks.append(f"<span class='i i-a'>A</span><strong>{int(assists)}</strong>")
+    if not chunks:
         return ""
-    return f"<span class='p-pill' style='font-size:.9rem'>{'&nbsp;&nbsp;'.join(parts)}</span>"
+    return f"<span class='p-pill'>{'&nbsp;&nbsp;&nbsp;'.join(chunks)}</span>"
+
 
 def slot_html(x_pct: float, y_pct: float, name: str, motm: bool=False, pill: str = "") -> str:
     """Player bubble + name + pill at fixed vertical stack."""
     bubble_cls = "p-bubble motm" if motm else "p-bubble"
-    init = initials(name)
+    init = "".join([t[0] for t in name.split()[:2]]).upper() or "?"
     return (
         f"<div class='p-slot' style='left:{x_pct}%;top:{y_pct}%;'>"
         f"  <div class='{bubble_cls}'><span class='p-init'>{init}</span></div>"
@@ -277,34 +278,49 @@ def slot_html(x_pct: float, y_pct: float, name: str, motm: bool=False, pill: str
         f"</div>"
     )
 
+
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
                  show_stats: bool = True, show_photos: bool = True):
     """
-    Self-contained FotMob-style pitch:
-    - Injects minimal CSS inline so it never breaks even if external CSS fails.
-    - Uses _ensure_positions(...) so line/slot are always valid.
+    FotMob-style pitch: lighter, premium look + scoped CSS so it never breaks.
+    Uses _ensure_positions(...) so line/slot are always valid.
     """
-    # Minimal inline CSS (scoped to this block only)
+    # Scoped inline CSS (lighter pitch + gold accents)
     pitch_css = """
     <style>
-    .pitch{position:relative;width:100%;padding-top:150%;
-      background: radial-gradient(1200px 800px at 50% -20%, #162417 0%, #0e1711 45%, #0b120d 100%);
-      border-radius:20px;border:1px solid #1b3b2d;overflow:hidden}
+    .pitch{
+      position:relative;width:100%;padding-top:150%;
+      background:
+        radial-gradient(1200px 800px at 50% -20%, #12161b 0%, #10151a 45%, #0f1418 100%),
+        repeating-linear-gradient(180deg, rgba(255,255,255,.03) 0 10px, rgba(255,255,255,0) 10px 28px);
+      border-radius:20px;border:1px solid #233041;overflow:hidden
+    }
     .pitch-inner{position:absolute;inset:10px;border-radius:16px}
-    .pitch-line{position:absolute;left:6%;right:6%;border-top:1px solid rgba(255,255,255,.06)}
-    .p-slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.3rem}
-    .p-bubble{width:64px;height:64px;border-radius:999px;display:flex;align-items:center;justify-content:center;
-      background:#0c2017;border:2px solid #274a3a;box-shadow:0 2px 10px rgba(0,0,0,.25)}
-    .p-bubble.motm{border-color:#D4AF37;box-shadow:0 0 0 2px rgba(212,175,55,.25),0 6px 18px rgba(212,175,55,.2)}
-    .p-init{font-weight:800;letter-spacing:.3px;color:#dff7ec;font-size:1rem}
-    .p-name{font-size:.95rem;font-weight:800;color:#E6EBF1;text-shadow:0 1px 0 rgba(0,0,0,.6)}
-    .p-pill{display:inline-flex;align-items:center;gap:.4rem;padding:.22rem .55rem;
-      background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:999px}
-    .p-ico{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}
+    .pitch-line{position:absolute;left:6%;right:6%;border-top:1px solid rgba(255,255,255,.10)}
+    .p-slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.34rem; text-align:center}
+    .p-bubble{
+      width:66px;height:66px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+      background:linear-gradient(180deg,#0f1720,#0b1219);border:2px solid #2c3e52;box-shadow:0 4px 16px rgba(0,0,0,.35)
+    }
+    .p-bubble.motm{border-color:#D4AF37;box-shadow:0 0 0 2px rgba(212,175,55,.22),0 10px 24px rgba(212,175,55,.18)}
+    .p-init{font-weight:800;letter-spacing:.3px;color:#eef6ff;font-size:1.02rem}
+    .p-name{font-size:.95rem;font-weight:800;color:#E9EEF3;text-shadow:0 1px 0 rgba(0,0,0,.6); max-width:120px}
+    .p-pill{
+      display:inline-flex;align-items:center;gap:.55rem;padding:.26rem .6rem;
+      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);border-radius:999px;
+      font-size:.95rem
+    }
+    .i{
+      display:inline-flex;align-items:center;justify-content:center;
+      width:18px;height:18px;border-radius:4px;font-size:.75rem;font-weight:900;
+      border:1px solid rgba(255,255,255,.25)
+    }
+    .i-g{color:#D4AF37;background:rgba(212,175,55,.12);border-color:rgba(212,175,55,.45)}
+    .i-a{color:#86c7ff;background:rgba(134,199,255,.12);border-color:rgba(134,199,255,.45)}
     </style>
     """
 
-    # Sanitize positions & compute layout
+    # Sanitize positions
     rows = _ensure_positions(rows, formation)
     parts = formation_to_lines(formation)
     if not parts:
@@ -323,7 +339,7 @@ def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], t
     # guide lines
     for i in range(n_lines + 1):
         y = top_margin + (inner_h / (n_lines + 1)) * (i + 0.5)
-        html.append(f"<div class='pitch-line' style='top:{y}%;opacity:.25'></div>")
+        html.append(f"<div class='pitch-line' style='top:{y}%'></div>")
 
     # GK at top center (if any)
     gk = rows[rows.get("is_gk") == True] if "is_gk" in rows.columns else pd.DataFrame()
