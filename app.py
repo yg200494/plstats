@@ -1,9 +1,11 @@
-# app.py — Powerleague Stats (v3)
-# - FotMob-style pitch (centered singles, GK bottom center, gold MOTM star)
-# - Formation change + Auto-arrange per team
-# - Player profile redesign with streaks, tabs, last N games default=5
-# - Stats page: single dropdown, global filters (season, min games, last N GWs, top N) apply to ALL metrics,
-#   including Duos & Nemesis, shown as sortable tables (no photos on Stats page)
+# app.py — Powerleague Stats (v4)
+# - Perfect centering: uses per-row relative slots so lone players are dead-center (even on 2-wide rows)
+# - MOTM gold star; clean chips; initials avatars
+# - Formation editor + auto-arrange; GK bottom-center
+# - Inline goals/assists editor for each player (works for past & future GWs)
+# - Stats page: one dropdown + global filters (Season, Min Games, Last N GWs, Top N)
+# - Fixed KeyError on Stats (internal vs display column names)
+# - Player profile: tabs + streaks + last-N games
 
 import io
 from typing import Optional, List, Dict, Tuple
@@ -54,9 +56,9 @@ footer,#MainMenu{display:none}
 
 /* Players */
 .spot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center}
-.avatar{position:relative;width:76px;height:76px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.55);box-shadow:0 2px 10px rgba(0,0,0,.45);background:#fff}
+.avatar{position:relative;width:80px;height:80px;border-radius:50%;overflow:hidden;border:2px solid rgba(255,255,255,.55);box-shadow:0 2px 10px rgba(0,0,0,.45);background:#fff}
 .avatar img{width:100%;height:100%;object-fit:cover}
-.init{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#fff;color:#1f2937;font-weight:800;font-size:26px;letter-spacing:.5px}
+.init{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#fff;color:#1f2937;font-weight:800;font-size:28px;letter-spacing:.5px}
 .motm{position:absolute;top:-8px;right:-8px;background:gold;color:#000;border-radius:50%;padding:2px 4px;font-size:12px;border:1px solid rgba(0,0,0,.25)}
 .name{margin-top:4px;font-size:13px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);white-space:nowrap}
 .chips{display:flex;gap:4px;margin-top:2px}
@@ -281,32 +283,58 @@ def _pitch_svg() -> str:
     """
 
 def _ensure_positions(team_df: pd.DataFrame, formation: str) -> pd.DataFrame:
-    """Guarantee line/slot (GK = last row center). If already set, keep."""
+    """
+    Guarantee line/slot. If already set, clamp into valid window so editor grid & render are consistent.
+    GK = last row center (not persisted here, only for view).
+    """
     rows = team_df.copy()
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
 
-    have = rows["line"].notna().sum()>0 and rows["slot"].notna().sum()>0
-    if have:  # keep existing, but snap singles visually via offsets during Auto-arrange
+    # If empty, nothing to do
+    if rows.empty: 
         return rows
 
-    rows["line"] = np.nan; rows["slot"] = np.nan
-    gk = rows[rows.get("is_gk", False)==True]
-    others = rows.drop(index=(gk.index[0] if not gk.empty else []), errors="ignore")
+    # Ensure numeric
+    rows["line"] = pd.to_numeric(rows.get("line"), errors="coerce")
+    rows["slot"] = pd.to_numeric(rows.get("slot"), errors="coerce")
 
-    # Distribute outfield across lines; center singles via offset
-    cur=0; filled=[0]*len(parts)
-    for idx,_ in others.iterrows():
-        if cur>=len(parts): cur=0
-        slots=parts[cur]; offset=(max_slots-slots)//2  # centers 1/2/3 across grid
-        pos=filled[cur] % slots
-        rows.loc[idx,["line","slot"]] = [cur, offset+pos]
-        filled[cur]+=1; cur+=1
+    # If NOTHING set, make a neat default (centered)
+    if rows["line"].isna().all() and rows["slot"].isna().all():
+        gk = rows[rows.get("is_gk", False)==True]
+        others = rows.drop(index=gk.index if not gk.empty else [], errors="ignore")
+        cur=0; filled=[0]*len(parts)
+        for idx,_ in others.iterrows():
+            if cur>=len(parts): cur=0
+            slots=parts[cur]; offset=(max_slots-slots)//2
+            pos=filled[cur] % slots
+            rows.loc[idx,["line","slot"]] = [cur, offset+pos]
+            filled[cur]+=1; cur+=1
+        if not gk.empty:
+            rows.loc[gk.index[0],["line","slot"]] = [len(parts), max_slots//2]
 
-    # GK bottom center
-    if not gk.empty:
-        center = max_slots//2
-        rows.loc[gk.index[0],["line","slot"]] = [len(parts), center]
+    # Clamp everything into its row window (so singles stay centered visually & editor matches)
+    for idx, r in rows.iterrows():
+        if bool(r.get("is_gk")):
+            rows.loc[idx,"line"] = len(parts)
+            rows.loc[idx,"slot"] = max_slots//2
+        else:
+            li = r.get("line")
+            if pd.isna(li) or int(li) < 0 or int(li) >= len(parts):
+                # push to first row by default
+                li = 0
+                rows.loc[idx,"line"] = 0
+            li = int(li)
+            slots = parts[li]
+            offset = (max_slots - slots)//2
+            s = r.get("slot")
+            if pd.isna(s):
+                rows.loc[idx,"slot"] = offset
+            else:
+                s = int(s)
+                if s < offset: s = offset
+                if s > offset + slots - 1: s = offset + slots - 1
+                rows.loc[idx,"slot"] = s
     return rows
 
 def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str], show_stats=True, show_photos=True):
@@ -321,10 +349,20 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
     html = [f"<div class='pitch'>{_pitch_svg()}"]
 
     for _, r in rows.iterrows():
-        row_idx = int(r.get("line") if pd.notna(r.get("line")) else len(parts))
-        if bool(r.get("is_gk")): row_idx = len(parts)
-        slot = int(r.get("slot") if pd.notna(r.get("slot")) else max_slots//2)
-        x = (100 * (slot+1)/(max_slots+1)); y = y_for(row_idx)
+        # Compute relative slot (per-row), then place evenly across the row width → guarantees perfect center
+        is_gk = bool(r.get("is_gk"))
+        row_idx = len(parts) if is_gk else int(r.get("line"))
+        slots_row = 1 if is_gk else parts[row_idx]
+        offset_row = 0 if is_gk else (max_slots - slots_row)//2
+        abs_slot = int(r.get("slot") if pd.notna(r.get("slot")) else (max_slots//2 if is_gk else offset_row))
+        rel_slot = abs_slot - offset_row
+        if rel_slot < 0: rel_slot = 0
+        if rel_slot >= slots_row: rel_slot = slots_row-1
+
+        # Even spacing within THIS row (not across max grid) → true centering
+        x = (100.0 * (rel_slot + 1) / (slots_row + 1))
+        y = y_for(row_idx)
+
         name = r.get("name","")
         g = int(r.get("goals") or 0); a = int(r.get("assists") or 0)
         is_m = (motm_name and str(name).strip()==str(motm_name).strip())
@@ -631,6 +669,44 @@ def page_matches():
             with eb:
                 pitch_editor(m["team_b"], fb, mid, b_rows, key_prefix=f"B_{mid}")
 
+        # NEW: Inline goals/assists & MOTM editor (works for future GWs too)
+        with st.expander("📊 Goals / Assists & MOTM", expanded=False):
+            s = service()
+            if not s:
+                st.info("Login as admin to edit stats.")
+            else:
+                # MOTM
+                all_names = g["name"].dropna().astype(str).unique().tolist()
+                default_idx = all_names.index(m.get("motm_name")) if m.get("motm_name") in all_names else 0 if all_names else None
+                colm1, colm2 = st.columns([3,1])
+                with colm1:
+                    motm_pick = st.selectbox("Man of the Match", all_names if all_names else [""], index=(default_idx if default_idx is not None else 0), key=f"motm_{mid}")
+                with colm2:
+                    if st.button("Save MOTM", key=f"motm_save_{mid}"):
+                        s.table("matches").update({"motm_name": motm_pick or None}).eq("id", mid).execute()
+                        clear_caches(); st.success("MOTM saved."); st.rerun()
+
+                st.markdown("#### Non-bibs")
+                a_updates = []
+                for _, r in a_rows.sort_values("name").iterrows():
+                    c1,c2,c3,c4 = st.columns([3,1,1,1])
+                    c1.write(r["name"])
+                    g_in = int(c2.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
+                    a_in = int(c3.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
+                    if c4.button("Save", key=f"save_{r['id']}"):
+                        s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
+                        clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
+
+                st.markdown("#### Bibs")
+                for _, r in b_rows.sort_values("name").iterrows():
+                    c1,c2,c3,c4 = st.columns([3,1,1,1])
+                    c1.write(r["name"])
+                    g_in = int(c2.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
+                    a_in = int(c3.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
+                    if c4.button("Save", key=f"save_{r['id']}"):
+                        s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
+                        clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
+
 def page_players():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups(); awards = fetch_awards()
     lfact, _ = build_fact(players, matches, lineups)
@@ -649,7 +725,6 @@ def page_players():
     tab1, tab2, tab3 = st.tabs(["Overview", "Match Log", "Duos & Nemesis"])
 
     with tab1:
-        # Hero
         c1, c2 = st.columns([1,2])
         with c1:
             st.image(p.get("photo_url") or f"https://placehold.co/240x240?text={''.join([w[0] for w in sel.split()[:2]]).upper()}", width=200)
@@ -673,7 +748,6 @@ def page_players():
                     f'</div></div>', unsafe_allow_html=True
                 )
 
-            # Streaks
             if not mine.empty:
                 mine_ord = mine.sort_values(["season","gw"])
                 res_streak = compute_streak(mine_ord["result"].tolist(), lambda r: r=="W")
@@ -755,67 +829,61 @@ def page_stats():
     # Apply global filters to ALL metrics
     agg = player_agg(lfact, season=season, min_games=min_games, last_gw=last_x)
 
-    # MOTM counts (honours)
+    # MOTM counts
     motm = awards[awards["type"]=="MOTM"].copy()
     if season is not None: motm = motm[motm["season"]==season]
     motm_cnt = motm.groupby("player_name").size().rename("MOTM")
-    agg = agg.merge(motm_cnt, left_on="name", right_index=True, how="left").fillna({"MOTM":0})
+    agg = agg.merge(motm_cnt, left_on("name"), right_index=True, how="left").fillna({"MOTM":0})
     agg["MOTM"] = agg["MOTM"].astype(int)
 
-    def df_players_table(cols_order: List[Tuple[str,str]], sort_cols: List[str], asc: List[bool]):
-        df = agg.copy()
-        # sorting by chosen metric(s)
-        df = df.sort_values(sort_cols, ascending=asc)
+    # Helper: show table with internal columns -> renamed for display
+    rename = {
+        "name":"Player","gp":"GP","w":"W","d":"D","l":"L","win_pct":"Win %","goals":"Goals",
+        "assists":"Assists","ga":"G+A","g_pg":"G/PG","a_pg":"A/PG","ga_pg":"G+A/PG",
+        "team_contrib_pct":"Team Contrib %","MOTM":"MOTM"
+    }
+    def show_players_table(internal_cols: List[str], sort_cols: List[str], asc: List[bool]):
+        df = agg.sort_values(sort_cols, ascending=asc)
         if top_n>0: df = df.head(top_n)
-        # rename columns for display & select
-        rename = {
-            "name":"Player","gp":"GP","w":"W","d":"D","l":"L","win_pct":"Win %","goals":"Goals",
-            "assists":"Assists","ga":"G+A","g_pg":"G/PG","a_pg":"A/PG","ga_pg":"G+A/PG",
-            "team_contrib_pct":"Team Contrib %","MOTM":"MOTM"
-        }
-        disp_cols = [rename.get(c,c) for c,_ in cols_order]
-        base = df[[c for c,_ in cols_order]].rename(columns=rename)
-        st.dataframe(base[disp_cols], use_container_width=True, hide_index=True)
+        st.dataframe(df[internal_cols].rename(columns=rename), use_container_width=True, hide_index=True)
 
     if metric == "Goals":
-        cols = [("Player",""),("GP",""),("Goals",""),("G/PG",""),("Assists",""),("G+A",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["goals","ga","assists"], [False,False,False])
+        cols = ["name","gp","goals","g_pg","assists","ga","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["goals","ga","assists"], [False,False,False])
 
     elif metric == "Assists":
-        cols = [("Player",""),("GP",""),("Assists",""),("A/PG",""),("Goals",""),("G+A",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["assists","ga","goals"], [False,False,False])
+        cols = ["name","gp","assists","a_pg","goals","ga","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["assists","ga","goals"], [False,False,False])
 
     elif metric == "G+A":
-        cols = [("Player",""),("GP",""),("G+A",""),("G+A/PG",""),("Goals",""),("Assists",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["ga","goals","assists"], [False,False,False])
+        cols = ["name","gp","ga","ga_pg","goals","assists","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["ga","goals","assists"], [False,False,False])
 
     elif metric == "Goals per Game":
-        cols = [("Player",""),("GP",""),("G/PG",""),("Goals",""),("Assists",""),("G+A",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["g_pg","goals"], [False,False])
+        cols = ["name","gp","g_pg","goals","assists","ga","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["g_pg","goals"], [False,False])
 
     elif metric == "Assists per Game":
-        cols = [("Player",""),("GP",""),("A/PG",""),("Assists",""),("Goals",""),("G+A",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["a_pg","assists"], [False,False])
+        cols = ["name","gp","a_pg","assists","goals","ga","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["a_pg","assists"], [False,False])
 
     elif metric == "G+A per Game":
-        cols = [("Player",""),("GP",""),("G+A/PG",""),("G+A",""),("Goals",""),("Assists",""),("Win %",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["ga_pg","ga","goals"], [False,False,False])
+        cols = ["name","gp","ga_pg","ga","goals","assists","win_pct","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["ga_pg","ga","goals"], [False,False,False])
 
     elif metric == "Win %":
-        cols = [("Player",""),("GP",""),("Win %",""),("W",""),("D",""),("L",""),("Goals",""),("Assists",""),("G+A",""),("Team Contrib %",""),("MOTM","")]
-        df_players_table(cols, ["win_pct","ga","goals"], [False,False,False])
+        cols = ["name","gp","win_pct","w","d","l","goals","assists","ga","team_contrib_pct","MOTM"]
+        show_players_table(cols, ["win_pct","ga","goals"], [False,False,False])
 
     elif metric == "Team Contribution %":
-        cols = [("Player",""),("GP",""),("Team Contrib %",""),("G+A",""),("Goals",""),("Assists",""),("Win %",""),("MOTM","")]
-        df_players_table(cols, ["team_contrib_pct","ga","goals"], [False,False,False])
+        cols = ["name","gp","team_contrib_pct","ga","goals","assists","win_pct","MOTM"]
+        show_players_table(cols, ["team_contrib_pct","ga","goals"], [False,False,False])
 
     elif metric == "MOTM":
-        cols = [("Player",""),("MOTM",""),("GP",""),("G+A",""),("Goals",""),("Assists",""),("Win %","")]
-        # sort by MOTM then G+A
         df = agg.sort_values(["MOTM","ga","goals"], ascending=[False,False,False])
         if top_n>0: df = df.head(top_n)
-        df = df.rename(columns={"name":"Player","gp":"GP","win_pct":"Win %","goals":"Goals","assists":"Assists","ga":"G+A"})
-        st.dataframe(df[[c for c,_ in cols]], use_container_width=True, hide_index=True)
+        cols = ["name","MOTM","gp","ga","goals","assists","win_pct"]
+        st.dataframe(df[cols].rename(columns=rename), use_container_width=True, hide_index=True)
 
     elif metric == "Best Duos":
         mg = max(1, min_games)
@@ -889,7 +957,21 @@ def upload_avatar(file, name):
 # Router
 # =========================
 def run_app():
-    header()
+    # header / auth
+    left, right = st.columns([1,1])
+    with left: st.title("⚽ Powerleague Stats")
+    with right:
+        if "is_admin" not in st.session_state: st.session_state["is_admin"]=False
+        if st.session_state["is_admin"]:
+            st.success("Admin mode", icon="🔐")
+            if st.button("Logout"): st.session_state["is_admin"]=False; st.rerun()
+        else:
+            with st.popover("Admin login"):
+                pw = st.text_input("Password", type="password")
+                if st.button("Login"):
+                    if pw==ADMIN_PASSWORD: st.session_state["is_admin"]=True; st.rerun()
+                    else: st.error("Invalid password")
+
     Page = getattr(st, "Page", None); nav = getattr(st, "navigation", None)
     pages = {
         "Matches": page_matches,
