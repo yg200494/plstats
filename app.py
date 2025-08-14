@@ -281,6 +281,7 @@ def stat_pill(goals: int, assists: int) -> str:
     return f"<span class='pill'>{'&nbsp;&nbsp;&nbsp;'.join(parts)}</span>"
 
 
+# --- COMBINED PITCH (left = Team A, right = Team B) ---
 def slot_html(x_pct: float, y_pct: float, name: str, *, motm: bool=False, pill: str = "", is_gk: bool=False) -> str:
     """Player bubble + name + pill; GK has distinct style + GK chip."""
     cls = "bubble"
@@ -302,10 +303,7 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                                 team_a: str, team_b: str,
                                 show_stats: bool=True):
     """
-    One premium pitch with both teams:
-      - Team A on LEFT half (attacking → right)
-      - Team B on RIGHT half (attacking → left, mirrored placement)
-      - Real pitch lines, clear GK styling, readable GA pills
+    One premium pitch with both teams on opposite halves.
     """
     css = """
     <style>
@@ -318,25 +316,20 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     .lines{position:absolute;left:4%;top:4%;right:4%;bottom:4%}
     .outline{position:absolute;inset:0;border:2px solid #ffffff}
     .halfway-v{position:absolute;left:50%;top:0;bottom:0;width:0;border-left:2px solid #ffffff}
-    .halfway-h{position:absolute;left:0;right:0;top:50%;height:0;border-top:0px solid transparent} /* not used here */
     .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:18%;height:18%;
       border:2px solid #ffffff;border-radius:999px}
     .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
-    /* Penalty boxes & goals left/right */
     .box-left{position:absolute;left:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-left:none}
     .six-left{position:absolute;left:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-left:none}
     .pen-dot-left{position:absolute;left:14%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
     .goal-left{position:absolute;left:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-right:none}
-
     .box-right{position:absolute;right:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-right:none}
     .six-right{position:absolute;right:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-right:none}
     .pen-dot-right{position:absolute;right:14%;top:50%;transform:translate(50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
     .goal-right{position:absolute;right:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-left:none}
-
-    /* Player layout */
     .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.36rem;text-align:center}
     .bubble{
       width:clamp(54px, 6.4vw, 70px); height:clamp(54px, 6.4vw, 70px);
@@ -351,8 +344,6 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     }
     .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.95rem,1.1vw,1.05rem)}
     .name{font-size:clamp(.88rem,1.05vw,1rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:140px}
-
-    /* G/A pill */
     .pill{display:inline-flex;align-items:center;gap:.6rem; padding:.28rem .65rem; border-radius:999px;
       background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.18); font-size:clamp(.9rem,1vw,.98rem)}
     .tag{
@@ -364,27 +355,23 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     </style>
     """
 
-    # Sanitize line/slot for each side per their formations
+    # Sanitize positions per formation
     a_rows = _ensure_positions(a_rows, formation_a)
     b_rows = _ensure_positions(b_rows, formation_b)
     parts_a = formation_to_lines(formation_a) or [1,2,1]
     parts_b = formation_to_lines(formation_b) or [1,2,1]
-    n_lines = max(len(parts_a), len(parts_b))
-    # We'll place lines using a common vertical grid, centered nicely:
-    y_top_margin = 12
-    y_bot_margin = 12
+
+    y_top_margin, y_bot_margin = 12, 12
     inner_h = 100 - y_top_margin - y_bot_margin
+    left_min, left_max  = 8, 48     # left half span
+    right_min, right_max = 52, 92   # right half span
 
-    # x ranges for halves
-    left_min, left_max  = 8, 48   # left half span
-    right_min, right_max = 52, 92 # right half span
-
-    def place_side(rows: pd.DataFrame, parts: List[int], *, left_half: bool):
-        """Yield HTML slot elements for one side."""
+    def _place_side(rows: pd.DataFrame, parts: List[int], *, left_half: bool):
         out = []
         max_slots = max(parts + [1])
-        # GK at goal center (left/right)
-        gk = rows[rows.get("is_gk")==True]
+
+        # GK on goal line center
+        gk = rows[rows.get("is_gk")==True] if "is_gk" in rows.columns else pd.DataFrame()
         if not gk.empty:
             r = gk.iloc[0]
             nm = str(r.get("name") or r.get("player_name") or "")
@@ -393,10 +380,9 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
             pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
             out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=True))
 
-        # Outfield rows, top→bottom (defence→attack is visual only)
+        # Outfield by rows
         for line_idx, slots in enumerate(parts):
             y = y_top_margin + inner_h * ((line_idx + 0.5) / len(parts))
-            # columns within the half
             half_span = (left_max - left_min) if left_half else (right_max - right_min)
             x0 = left_min if left_half else right_min
             x_gap = half_span / (slots + 1)
@@ -407,10 +393,10 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                 p = line_df[line_df.get("slot")==abs_slot].head(1)
                 if len(p)==0: 
                     continue
-                r = p.iloc[0]
-                nm = str(r.get("name") or r.get("player_name") or "")
+                rr = p.iloc[0]
+                nm = str(rr.get("name") or rr.get("player_name") or "")
                 x = x0 + (j+1)*x_gap
-                pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
+                pill = stat_pill(int(rr.get("goals") or 0), int(rr.get("assists") or 0)) if show_stats else ""
                 out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=False))
         return out
 
@@ -424,13 +410,12 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
             "<div class='box-right'></div><div class='six-right'></div><div class='pen-dot-right'></div><div class='goal-right'></div>"
             "</div>"]
 
-    html += place_side(a_rows, parts_a, left_half=True)
-    html += place_side(b_rows, parts_b, left_half=False)
+    html += _place_side(a_rows, parts_a, left_half=True)
+    html += _place_side(b_rows, parts_b, left_half=False)
 
     html.append("</div></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
 
-    )
 
 
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
