@@ -1,34 +1,36 @@
-# app.py — Powerleague Stats (Revamp)
-# - Team-colored, perfectly centered FotMob-style pitch (no overlaps)
-# - Modern goal/assist chips + MOTM gold star
+# app.py — Powerleague Stats (Final)
+# - Pitch: centered, FotMob-style, team-colored rings, modern chips, MOTM star
 # - Matches: dropdown selector, add/update matches (past & future), inline G/A + MOTM editor
-# - Stats: single dropdown (Goals, Assists, G+A, per-game, Win%, Team Contribution %, MOTM, Duos, Nemesis) + filters (Season, Min Games, Last N, Top N)
-# - Player Profile: hero + stat cards, streaks, last-N table, duos & nemesis
-# - Safe Supabase calls, robust parsing; works with public read + service-role for writes
+# - Stats: dropdown metrics (incl. duos/nemesis) + Season/Min Games/Last N/Top N filters
+# - Player Profile: hero, cards, streaks, last-N, duos & nemesis
+# - Player Manager: add/edit/rename player, upload JPG/PNG/HEIC -> square PNG to Supabase Storage
+# - Admin writes guarded by ADMIN_PASSWORD + SERVICE KEY
 
 from __future__ import annotations
 import io
 import base64
 import datetime as dt
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 
+from PIL import Image
+import pillow_heif
+
 # -----------------------------
-# App config
+# App config + CSS
 # -----------------------------
 st.set_page_config(page_title="Powerleague Stats", page_icon="⚽", layout="wide", initial_sidebar_state="collapsed")
 
-# Load custom CSS (placed at styles/styles.css)
 def load_css():
     try:
         with open("styles/styles.css", "r", encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
     except Exception:
-        pass  # app still works even if css isn't present yet
+        pass
 
 load_css()
 
@@ -43,20 +45,19 @@ if missing:
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
-SUPABASE_SERVICE_KEY = st.secrets.get("SUPABASE_SERVICE_KEY")  # optional locally; required for writes in prod
+SUPABASE_SERVICE_KEY = st.secrets.get("SUPABASE_SERVICE_KEY")  # required for writes
 ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 AVATAR_BUCKET = st.secrets["AVATAR_BUCKET"]
 
 sb_public: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 def service() -> Optional[Client]:
-    """Service client only when admin is logged in and key exists."""
     if st.session_state.get("is_admin") and SUPABASE_SERVICE_KEY:
         return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     return None
 
 # -----------------------------
-# Cache: reads
+# Cached reads
 # -----------------------------
 @st.cache_data(ttl=20)
 def fetch_players() -> pd.DataFrame:
@@ -92,14 +93,14 @@ def clear_caches():
 # -----------------------------
 # Helpers
 # -----------------------------
-TEAM_COLORS = {
-    "Non-bibs": "#2f7ef0",  # blue
-    "Bibs": "#ff8a1c",      # orange
-}
+TEAM_COLORS = {"Non-bibs": "#2f7ef0", "Bibs": "#ff8a1c"}
 
 def initials(name: str) -> str:
     parts = [p[0] for p in str(name).split() if p]
     return "".join(parts[:2]).upper() or "?"
+
+def _to_int(s):
+    return pd.to_numeric(s, errors="coerce")
 
 def formation_to_lines(form: str | None) -> List[int]:
     if not form: return [1,2,1]
@@ -109,59 +110,37 @@ def formation_to_lines(form: str | None) -> List[int]:
     except Exception:
         return [1,2,1]
 
-def _to_int(s):
-    return pd.to_numeric(s, errors="coerce")
-
-def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Join lineup rows with match metadata; unify season/gw columns; derive results."""
     if matches.empty or lineups.empty:
         return pd.DataFrame(columns=[
-            "match_id","season","gw","date","team","team_a","team_b",
-            "score_a","score_b","is_draw","motm_name","formation_a","formation_b",
-            "player_id","player_name","name","photo","goals","assists","ga","result",
-            "team_goals","opp_goals","is_gk","line","slot"
+            "match_id","season","gw","date","team","team_a","team_b","score_a","score_b","is_draw",
+            "motm_name","formation_a","formation_b","player_id","player_name","name","photo",
+            "goals","assists","ga","result","team_goals","opp_goals","is_gk","line","slot"
         ]), matches
 
-    m = matches.copy()
-    l = lineups.copy()
-    p = players.copy()
-
-    # types
+    m = matches.copy(); l = lineups.copy(); p = players.copy()
     for c in ["season","gw","score_a","score_b","side_count"]:
-        if c in m.columns:
-            m[c] = _to_int(m[c])
+        if c in m.columns: m[c] = _to_int(m[c])
     for c in ["season","gw","goals","assists","line","slot"]:
-        if c in l.columns:
-            l[c] = _to_int(l[c])
+        if c in l.columns: l[c] = _to_int(l[c])
 
     keep = ["id","season","gw","date","team_a","team_b","score_a","score_b","is_draw","motm_name","formation_a","formation_b"]
-    # IMPORTANT: add suffixes so we can unify season/gw deterministically
-    j = l.merge(
-        m[keep].rename(columns={"id":"match_id"}),
-        on="match_id",
-        how="left",
-        suffixes=("_lu","_ma")
-    )
+    j = l.merge(m[keep].rename(columns={"id":"match_id"}), on="match_id", how="left", suffixes=("_lu","_ma"))
 
-    # Unify season/gw into plain columns (prefer lineup values, fall back to match)
     def pick(a, b):
-        if a is None and b is None:
-            return pd.Series(dtype="float64")
+        if a is None and b is None: return pd.Series(dtype="float64")
         a = _to_int(a) if a is not None else None
         b = _to_int(b) if b is not None else None
-        if a is None:  return b
-        if b is None:  return a
+        if a is None: return b
+        if b is None: return a
         return a.where(a.notna(), b)
 
     j["season"] = pick(j.get("season_lu"), j.get("season_ma"))
     j["gw"]     = pick(j.get("gw_lu"),     j.get("gw_ma"))
-
-    # clean suffix columns if present
     for c in ["season_lu","season_ma","gw_lu","gw_ma"]:
-        if c in j.columns:
-            j.drop(columns=c, inplace=True)
+        if c in j.columns: j.drop(columns=c, inplace=True)
 
-    # player name/photo
     if not p.empty:
         pp = p.rename(columns={"id":"player_id"}).copy()
         j = j.merge(pp[["player_id","name","photo_url"]], on="player_id", how="left")
@@ -171,10 +150,8 @@ def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFra
         )
         j["photo"] = j["photo_url"]
     else:
-        j["name"] = j["player_name"]
-        j["photo"] = None
+        j["name"] = j["player_name"]; j["photo"] = None
 
-    # results & totals
     j["side"] = np.where(j["team"]==j["team_a"], "A", np.where(j["team"]==j["team_b"], "B", None))
     j["team_goals"] = np.where(j["side"]=="A", j["score_a"], np.where(j["side"]=="B", j["score_b"], np.nan))
     j["opp_goals"]  = np.where(j["side"]=="A", j["score_b"], np.where(j["side"]=="B", j["score_a"], np.nan))
@@ -185,7 +162,6 @@ def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFra
     j["is_gk"] = j.get("is_gk", False).astype(bool)
 
     return j, matches
-
 
 def df_filter_by(df: pd.DataFrame, season: Optional[int], last_gw: int) -> pd.DataFrame:
     d = df.copy()
@@ -264,10 +240,9 @@ def compute_streak(series_vals, predicate):
     return count
 
 # -----------------------------
-# Pitch rendering (perfect centering)
+# Pitch rendering
 # -----------------------------
 def _pitch_svg() -> str:
-    # Thin white lines over a subtle grass
     return """
     <svg viewBox="0 0 100 150" preserveAspectRatio="none">
       <defs>
@@ -298,10 +273,6 @@ def _avatar_html(name: str, photo_url: Optional[str], team: str, motm: bool) -> 
     return f"<div class='pl-avatar' style='border-color:{border};'>{img}{star}</div>"
 
 def _ensure_positions(team_df: pd.DataFrame, formation: str) -> pd.DataFrame:
-    """
-    Guarantee line/slot. If unset, center everyone: GK bottom-center, outfield evenly distributed per row.
-    Also clamps stored positions into valid row windows so render stays centered.
-    """
     rows = team_df.copy()
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
@@ -310,14 +281,11 @@ def _ensure_positions(team_df: pd.DataFrame, formation: str) -> pd.DataFrame:
     rows["line"] = _to_int(rows.get("line")).astype("Int64")
     rows["slot"] = _to_int(rows.get("slot")).astype("Int64")
 
-    # default layout if nothing set
     if rows["line"].isna().all() and rows["slot"].isna().all():
         gk = rows[rows.get("is_gk", False)==True]
         others = rows.drop(index=gk.index if not gk.empty else [], errors="ignore")
-        # put GK
         if not gk.empty:
             rows.loc[gk.index[0],["line","slot"]] = [len(parts), max_slots//2]
-        # evenly fill outfield rows, centered per row
         cur=0; filled=[0]*len(parts)
         for idx,_ in others.iterrows():
             if cur>=len(parts): cur=0
@@ -326,7 +294,6 @@ def _ensure_positions(team_df: pd.DataFrame, formation: str) -> pd.DataFrame:
             rows.loc[idx,["line","slot"]] = [cur, offset+pos]
             filled[cur]+=1; cur+=1
 
-    # clamp to row windows
     for idx, r in rows.iterrows():
         if bool(r.get("is_gk")):
             rows.loc[idx,"line"] = len(parts)
@@ -348,9 +315,8 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
     max_slots = max(parts+[1])
     total_rows = len(parts)+1  # + GK row
 
-    # Add larger vertical padding so top/bottom rows (ST / GK) don't hit the borders
-    TOP_PAD = 14   # percent
-    BOT_PAD = 14   # percent
+    TOP_PAD = 18
+    BOT_PAD = 18
 
     def y_for(i: int) -> float:
         if total_rows <= 1:
@@ -389,7 +355,6 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
         )
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
-
 
 # -----------------------------
 # Admin/auth header
@@ -456,19 +421,19 @@ def fixtures_admin_table():
         st.info("Login as admin to edit fixtures.")
         st.dataframe(matches.sort_values(["season","gw"])[["season","gw","date","team_a","score_a","score_b","team_b","motm_name"]], use_container_width=True, hide_index=True)
         return
+    presets = ["1-2-1","1-3","2-2","3-1","2-1-2-1","3-2-1","2-3-1"]
     for _, m in matches.sort_values(["season","gw"]).iterrows():
-        with st.expander(f"S{int(m['season'])} GW{int(m['gw'])} — {m['team_a']} {m['score_a']}–{m['score_b']} {m['team_b']}"):
+        with st.expander(f"S{int(m['season'])} GW{int(m['gw'])} — {m['team_a']} {int(m['score_a'] or 0)}–{int(m['score_b'] or 0)} {m['team_b']}"):
             d1,d2,d3,d4 = st.columns([2,2,1,1])
             date = d1.date_input("Date", value=pd.to_datetime(m["date"]).date() if pd.notna(m["date"]) else dt.date.today(), key=f"dt_{m['id']}")
             sa = int(d2.number_input("Score A", min_value=0, value=int(m.get("score_a") or 0), key=f"sa_{m['id']}"))
             sb = int(d3.number_input("Score B", min_value=0, value=int(m.get("score_b") or 0), key=f"sb_{m['id']}"))
             motm = d4.text_input("MOTM", value=m.get("motm_name") or "", key=f"mm_{m['id']}")
             fa, fb = st.columns(2)
-            presets = ["1-2-1","1-3","2-2","3-1","2-1-2-1","3-2-1","2-3-1"]
             idxa = presets.index(m.get("formation_a")) if m.get("formation_a") in presets else 0
             idxb = presets.index(m.get("formation_b")) if m.get("formation_b") in presets else 0
-            forma = fa.selectbox("Formation A", presets, index=idxa, key=f"fa_{m['id']}")
-            formb = fb.selectbox("Formation B", presets, index=idxb, key=f"fb_{m['id']}")
+            forma = fa.selectbox("Formation A", presets, index=idxa, key=f"fix_fa_{m['id']}")
+            formb = fb.selectbox("Formation B", presets, index=idxb, key=f"fix_fb_{m['id']}")
             if st.button("Save", key=f"fixsave_{m['id']}"):
                 s.table("matches").update({
                     "date": str(date), "score_a": sa, "score_b": sb, "is_draw": (sa==sb),
@@ -501,7 +466,6 @@ def page_matches():
     m = matches[matches["id"].astype(str)==mid].iloc[0]
     show_photos = st.toggle("Show photos", True, key=f"sp_{mid}")
 
-    # Banner
     st.markdown(
         f"<div class='pl-banner'>"
         f"<div><div class='pl-title'>Season {int(m['season'])} · GW {int(m['gw'])}</div>"
@@ -521,8 +485,8 @@ def page_matches():
         presets5 = ["1-2-1","1-3","2-2","3-1"]; presets7 = ["2-1-2-1","3-2-1","2-3-1"]
         preset_list = presets7 if int(m.get("side_count") or 5)==7 else presets5
         colf1, colf2, colf3 = st.columns([2,2,1])
-        fa = colf1.selectbox("Formation (Non-bibs)", preset_list, index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0), key=f"fa_{mid}")
-        fb = colf2.selectbox("Formation (Bibs)", preset_list, index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0), key=f"fb_{mid}")
+        fa = colf1.selectbox("Formation (Non-bibs)", preset_list, index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0), key=f"view_fa_{mid}")
+        fb = colf2.selectbox("Formation (Bibs)", preset_list, index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0), key=f"view_fb_{mid}")
         if colf3.button("Save formations"):
             s = service()
             if not s: st.error("Admin required.")
@@ -548,7 +512,6 @@ def page_matches():
             if not s:
                 st.info("Login as admin.")
             else:
-                # MOTM
                 all_names = g["name"].dropna().astype(str).unique().tolist()
                 default_idx = all_names.index(m.get("motm_name")) if m.get("motm_name") in all_names else (0 if all_names else None)
                 colm1, colm2 = st.columns([3,1])
@@ -580,7 +543,101 @@ def page_matches():
                         clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
 
 # -----------------------------
-# Player Profile
+# Player Manager (Add/Edit + Photo upload)
+# -----------------------------
+def process_avatar_to_png_square(file) -> bytes:
+    """Read uploaded image (JPG/PNG/HEIC) and return square PNG bytes (512x512)."""
+    data = file.read()
+    name = (file.name or "").lower()
+    if name.endswith(".heic") or "heic" in (file.type or "").lower():
+        heif = pillow_heif.read_heif(io.BytesIO(data))
+        img = Image.frombytes(heif.mode, heif.size, heif.data, "raw")
+    else:
+        img = Image.open(io.BytesIO(data))
+        if img.mode in ("P", "RGBA"):  # unify
+            img = img.convert("RGB")
+    # center-crop square
+    w,h = img.size
+    m = min(w,h)
+    left = (w-m)//2; top = (h-m)//2
+    img = img.crop((left, top, left+m, top+m)).resize((512,512))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+def upload_avatar_png(player_id: str, png_bytes: bytes) -> str:
+    """Upload to Supabase Storage avatars bucket and return public URL."""
+    s = service()
+    if not s: raise RuntimeError("Admin required to upload photos.")
+    path = f"players/{player_id}.png"
+    s.storage.from_(AVATAR_BUCKET).upload(path, png_bytes, {"content-type": "image/png", "x-upsert": "true"})
+    # get public url
+    url = s.storage.from_(AVATAR_BUCKET).get_public_url(path)
+    return url
+
+def page_player_manager():
+    st.subheader("Player Manager")
+    players = fetch_players()
+    s = service()
+    if not st.session_state.get("is_admin"):
+        st.info("Login as admin to add/edit players.")
+        st.dataframe(players[["name","photo_url","notes"]].rename(columns={"photo_url":"Photo"}), use_container_width=True, hide_index=True)
+        return
+
+    tab1, tab2 = st.tabs(["Edit Existing", "Add New"])
+    with tab1:
+        if players.empty:
+            st.info("No players yet."); 
+        else:
+            sel = st.selectbox("Select player", players["name"].tolist())
+            prow = players[players["name"]==sel].iloc[0]
+            new_name = st.text_input("Name", value=prow["name"])
+            notes = st.text_area("Notes", value=prow.get("notes") or "")
+            up = st.file_uploader("Upload photo (JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key=f"edit_upload_{prow['id']}")
+            colb1, colb2, colb3 = st.columns([1,1,1])
+            if colb1.button("Save", type="primary", key=f"save_player_{prow['id']}"):
+                if not s: st.error("Admin required.")
+                else:
+                    update = {"name": new_name, "notes": (notes or None)}
+                    s.table("players").update(update).eq("id", prow["id"]).execute()
+                    clear_caches(); st.success("Player updated."); st.rerun()
+            if up is not None and colb2.button("Save photo", key=f"save_photo_{prow['id']}"):
+                try:
+                    png = process_avatar_to_png_square(up)
+                    url = upload_avatar_png(prow["id"], png)
+                    s.table("players").update({"photo_url": url}).eq("id", prow["id"]).execute()
+                    clear_caches(); st.success("Photo updated."); st.rerun()
+                except Exception as e:
+                    st.error(f"Upload failed: {e}")
+            if colb3.button("Delete player", type="secondary", key=f"del_{prow['id']}"):
+                s.table("players").delete().eq("id", prow["id"]).execute()
+                clear_caches(); st.success("Deleted."); st.rerun()
+
+    with tab2:
+        nm = st.text_input("Name (unique)")
+        nt = st.text_area("Notes")
+        up2 = st.file_uploader("Upload photo (optional, JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key="new_upload")
+        if st.button("Add player", type="primary"):
+            if not s: st.error("Admin required.")
+            elif not nm.strip():
+                st.error("Name is required.")
+            else:
+                # create player
+                res = s.table("players").insert({"name": nm.strip(), "notes": (nt or None)}).execute()
+                new = pd.DataFrame(res.data)
+                if not new.empty:
+                    pid = new.iloc[0]["id"]
+                    if up2 is not None:
+                        try:
+                            png = process_avatar_to_png_square(up2)
+                            url = upload_avatar_png(pid, png)
+                            s.table("players").update({"photo_url": url}).eq("id", pid).execute()
+                        except Exception as e:
+                            st.error(f"Photo upload failed: {e}")
+                clear_caches(); st.success("Player added."); st.rerun()
+
+# -----------------------------
+# Players (profile)
 # -----------------------------
 def page_players():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups(); awards = fetch_awards()
@@ -682,7 +739,7 @@ def page_players():
         st.caption("No nemesis data yet.")
 
 # -----------------------------
-# Stats Page
+# Stats
 # -----------------------------
 def page_stats():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups(); awards = fetch_awards()
@@ -704,7 +761,6 @@ def page_stats():
 
     agg = player_agg(lfact, season=season, min_games=min_games, last_gw=last_x)
 
-    # MOTM counts (safe)
     motm = awards[awards["type"]=="MOTM"] if "type" in awards.columns else pd.DataFrame(columns=["player_name","type","season","gw"])
     if season is not None and not motm.empty and "season" in motm.columns:
         motm = motm[motm["season"]==season]
@@ -757,7 +813,7 @@ def page_stats():
         st.dataframe(df.rename(columns={"pair":"Pair","gp":"GP","w_vs":"W","d_vs":"D","l_vs":"L","win_pct_vs":"Win % vs"}), use_container_width=True, hide_index=True)
 
 # -----------------------------
-# Awards (simple)
+# Awards
 # -----------------------------
 def page_awards():
     aw = fetch_awards()
@@ -802,20 +858,23 @@ def page_awards():
 # Router
 # -----------------------------
 def run_app():
+    # Header + auth
     header()
-    Page = getattr(st, "Page", None); nav = getattr(st, "navigation", None)
 
-    # Map routes
+    Page = getattr(st, "Page", None); nav = getattr(st, "navigation", None)
     pages = {
         "Matches": page_matches,
         "Players": page_players,
+        "Player Manager": page_player_manager,
         "Stats": page_stats,
         "Awards": page_awards,
     }
+
     if Page and nav:
         sections = {"Main":[
             Page(page_matches, title="Matches", icon="📋"),
             Page(page_players, title="Players", icon="👤"),
+            Page(page_player_manager, title="Player Manager", icon="🛠️"),
             Page(page_stats, title="Stats", icon="📊"),
             Page(page_awards, title="Awards", icon="🏆"),
         ]}
