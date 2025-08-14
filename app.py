@@ -212,6 +212,26 @@ def build_fact(players, matches, lineups):
     )
 
     l = lineups.merge(mi, on="match_id", how="left")
+        # ---- add this block RIGHT AFTER the merge ----
+    def pick_col(df, base):
+        if base in df.columns:
+            return df[base]
+        if f"{base}_x" in df.columns:
+            return df[f"{base}_x"]
+        if f"{base}_y" in df.columns:
+            return df[f"{base}_y"]
+        # fallback: all-NaN Series with correct length
+        return pd.Series([np.nan] * len(df), index=df.index)
+
+    # Prefer season/gw from lineups; else from matches; coerce to nullable ints
+    l["season"] = pd.to_numeric(pick_col(l, "season"), errors="coerce").astype("Int64")
+    l["gw"]     = pd.to_numeric(pick_col(l, "gw"),     errors="coerce").astype("Int64")
+
+    # (optional) clean up suffix leftovers so downstream code sees plain names only
+    for col in ["season_x", "season_y", "gw_x", "gw_y"]:
+        if col in l.columns:
+            del l[col]
+
 
     # Coerce numeric
     l["goals"] = pd.to_numeric(l.get("goals"), errors="coerce").fillna(0).astype(int)
