@@ -1,0 +1,53 @@
+/* styles.css — clean FotMob-esque aesthetic */
+
+:root{
+  --bg1:#0b1324; --bg2:#0a1a2f;
+  --card:rgba(15,23,42,.66); --card-br:rgba(255,255,255,.10);
+  --text:#e6edf3; --accent:#22c55e; --muted:#a7b1c2;
+  --chip:#ffffff; --chip-g:#22c55e; --chip-a:#60a5fa;
+}
+
+html, body, [data-testid="stAppViewContainer"]{
+  background:linear-gradient(180deg,var(--bg1) 0%, var(--bg2) 100%) !important;
+  color:var(--text) !important;
+}
+footer, #MainMenu { display:none }
+
+.pl-banner{
+  background:linear-gradient(90deg,#0f172a 0%,#0b1324 100%);
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:16px; padding:12px 16px;
+  display:flex; align-items:center; justify-content:space-between; gap:12px; color:#fff;
+  margin: 4px 0 12px 0;
+}
+.pl-banner.slim{ justify-content:flex-start; gap:10px }
+.pl-title{font-weight:800; font-size:18px}
+.pl-sub{opacity:.85; font-size:12px}
+.pl-badge{background:var(--accent); color:#062616; font-weight:700; border-radius:999px; padding:6px 10px; font-size:12px; border:1px solid rgba(0,0,0,.25)}
+
+.pl-pitch{
+  position:relative; width:100%; padding-top:150%;
+  border-radius:20px; overflow:hidden; box-shadow:0 8px 22px rgba(0,0,0,.35);
+  border:1px solid rgba(255,255,255,.18);
+}
+.pl-pitch svg{ position:absolute; inset:0 }
+
+.pl-spot{ position:absolute; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center }
+.pl-name{ margin-top:6px; font-size:13px; font-weight:700; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.6); white-space:nowrap }
+
+.pl-avatar{ position:relative; width:86px; height:86px; border-radius:50%;
+  overflow:hidden; border:3px solid #ddd; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,.45) }
+.pl-avatar.pl-large{ width:160px; height:160px }
+.pl-avatar-img{ width:100%; height:100%; object-fit:cover }
+.pl-avatar-init{ width:100%; height:100%; display:flex; align-items:center; justify-content:center; background:#fff; color:#1f2937; font-weight:800; font-size:28px; letter-spacing:.5px }
+.pl-motm{ position:absolute; top:-8px; right:-8px; background:gold; color:#000; border-radius:50%; padding:2px 4px; font-size:12px; border:1px solid rgba(0,0,0,.25) }
+
+.pl-chips{ display:flex; gap:6px; margin-top:4px }
+.pl-chip{ background:rgba(255,255,255,.92); color:#111; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid rgba(17,17,17,.08); box-shadow:0 1px 2px rgba(0,0,0,.15) }
+.pl-chip-g{ border-color:rgba(34,197,94,.35) }
+.pl-chip-a{ border-color:rgba(96,165,250,.35) }
+
+.pl-cards{ display:flex; flex-wrap:wrap; gap:10px; margin:8px 0 14px 0 }
+.pl-card{ background:var(--card); border:1px solid var(--card-br); border-radius:14px; padding:12px 14px; min-width:120px; text-align:center }
+.pl-card-val{ font-weight:800; font-size:20px; color:#fff }
+.pl-card-lbl{ color:var(--muted); font-size:12px; margin-top:2px }
