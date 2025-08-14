@@ -100,19 +100,21 @@ def initials(name: str) -> str:
     return "".join([t[0] for t in str(name).split()[:2]]).upper() or "?"
 
 def validate_formation(formation: Optional[str], side_count: int) -> str:
-    """Ensure formation matches side_count outfielders (4 for 5s, 6 for 7s)."""
+    """
+    Return a formation string that matches side_count:
+      - 5-a-side => 4 outfielders (e.g., 1-2-1, 2-2, 3-1)
+      - 7-a-side => 6 outfielders (e.g., 2-1-2-1, 3-2-1, 2-3-1)
+    Falls back to sensible defaults if invalid.
+    """
     try:
-        parts = [int(x) for x in str(formation or "").split("-") if str(x).isdigit()]
+        parts = [int(x) for x in str(formation or "").split("-") if str(x).strip().isdigit()]
     except Exception:
         parts = []
     outfield_needed = 4 if int(side_count or 5) == 5 else 6
-    if sum(parts) != outfield_needed or not parts:
-        # sensible defaults
-        return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
-    # also reject impossible rows (0 etc.)
-    if any(p <= 0 for p in parts):
+    if sum(parts) != outfield_needed or not parts or any(p <= 0 for p in parts):
         return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
     return "-".join(str(p) for p in parts)
+
 
 # ---------- Caching helpers ----------
 @st.cache_data(ttl=60, show_spinner=False)
@@ -303,99 +305,128 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                                 team_a: str, team_b: str,
                                 show_stats: bool=True):
     """
-    One premium pitch with both teams on opposite halves.
+    One premium pitch with both teams on opposite halves, compact aspect for mobile.
+    SIDE-ORIENTED: lines go left→center (Team A) and right→center (Team B).
+    Players in a line are spaced vertically within their half.
     """
     css = """
     <style>
-    .pitchX{position:relative;width:100%;padding-top:150%;border-radius:18px;overflow:hidden;
+    .pitchX{
+      position:relative;width:100%;
+      padding-top:62%; /* compact landscape aspect */
+      border-radius:18px;overflow:hidden;
       background:
-        radial-gradient(1200px 800px at 50% -35%, #2f7a43 0%, #286a3a 42%, #235f34 100%),
-        repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 14px, rgba(255,255,255,0) 14px 30px);
-      border:1px solid rgba(255,255,255,.16)}
+        repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 12px, rgba(255,255,255,0) 12px 26px),
+        radial-gradient(1000px 600px at 50% -20%, #2f7a43 0%, #2a6f3c 45%, #235f34 100%);
+      border:1px solid rgba(255,255,255,.16)
+    }
     .inner{position:absolute;inset:10px;border-radius:14px}
-    .lines{position:absolute;left:4%;top:4%;right:4%;bottom:4%}
+    .lines{position:absolute;left:3.5%;top:6%;right:3.5%;bottom:6%}
     .outline{position:absolute;inset:0;border:2px solid #ffffff}
-    .halfway-v{position:absolute;left:50%;top:0;bottom:0;width:0;border-left:2px solid #ffffff}
-    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:18%;height:18%;
+    .halfway-v{position:absolute;left:50%;top:0;bottom:0;border-left:2px solid #ffffff}
+    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:14%;height:14%;
       border:2px solid #ffffff;border-radius:999px}
     .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
-    .box-left{position:absolute;left:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-left:none}
-    .six-left{position:absolute;left:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-left:none}
-    .pen-dot-left{position:absolute;left:14%;top:50%;transform:translate(-50%,-50%);
+    /* Penalty boxes & goals left/right */
+    .box-left{position:absolute;left:0;top:18%;bottom:18%;width:18%;border:2px solid #ffffff;border-left:none}
+    .six-left{position:absolute;left:0;top:36%;bottom:36%;width:8%;border:2px solid #ffffff;border-left:none}
+    .pen-dot-left{position:absolute;left:12%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
-    .goal-left{position:absolute;left:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-right:none}
-    .box-right{position:absolute;right:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-right:none}
-    .six-right{position:absolute;right:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-right:none}
-    .pen-dot-right{position:absolute;right:14%;top:50%;transform:translate(50%,-50%);
+    .goal-left{position:absolute;left:-1.2%;top:46%;bottom:46%;width:1.2%;border:2px solid #ffffff;border-right:none}
+
+    .box-right{position:absolute;right:0;top:18%;bottom:18%;width:18%;border:2px solid #ffffff;border-right:none}
+    .six-right{position:absolute;right:0;top:36%;bottom:36%;width:8%;border:2px solid #ffffff;border-right:none}
+    .pen-dot-right{position:absolute;right:12%;top:50%;transform:translate(50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
-    .goal-right{position:absolute;right:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-left:none}
-    .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.36rem;text-align:center}
+    .goal-right{position:absolute;right:-1.2%;top:46%;bottom:46%;width:1.2%;border:2px solid #ffffff;border-left:none}
+
+    /* Players */
+    .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.34rem;text-align:center}
     .bubble{
-      width:clamp(54px, 6.4vw, 70px); height:clamp(54px, 6.4vw, 70px);
+      width:clamp(52px, 6.2vw, 70px); height:clamp(52px, 6.2vw, 70px);
       border-radius:999px; display:flex; align-items:center; justify-content:center; position:relative;
-      background:linear-gradient(180deg,#0e1620,#0b131b); border:2px solid #2f4860; box-shadow:0 6px 16px rgba(0,0,0,.35)
+      background:linear-gradient(180deg,#0e1620,#0b131b); border:2px solid #2f4860; box-shadow:0 5px 14px rgba(0,0,0,.34)
     }
     .bubble.motm{ border-color:#D4AF37; box-shadow:0 0 0 2px rgba(212,175,55,.22), 0 10px 22px rgba(212,175,55,.16) }
     .bubble.gk{ background:linear-gradient(180deg,#0c1e2b,#0a1924); border-color:#4db6ff }
     .chip-gk{
-      position:absolute; right:-6px; top:-6px; padding:.15rem .35rem; font-size:.68rem; font-weight:900;
+      position:absolute; right:-6px; top:-6px; padding:.14rem .34rem; font-size:.66rem; font-weight:900;
       border-radius:8px; background:rgba(77,182,255,.18); color:#bfe6ff; border:1px solid rgba(77,182,255,.45)
     }
-    .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.95rem,1.1vw,1.05rem)}
-    .name{font-size:clamp(.88rem,1.05vw,1rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:140px}
-    .pill{display:inline-flex;align-items:center;gap:.6rem; padding:.28rem .65rem; border-radius:999px;
-      background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.18); font-size:clamp(.9rem,1vw,.98rem)}
+    .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.92rem,1vw,1.02rem)}
+    .name{font-size:clamp(.86rem,.98vw,.98rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:130px}
+
+    /* G/A pill */
+    .pill{display:inline-flex;align-items:center;gap:.58rem; padding:.24rem .58rem; border-radius:999px;
+      background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.18); font-size:clamp(.88rem,.96vw,.96rem)}
     .tag{
       display:inline-flex;align-items:center;justify-content:center;
-      width:20px;height:20px;border-radius:5px;font-size:.76rem;font-weight:900;border:1px solid rgba(255,255,255,.3)
+      width:19px;height:19px;border-radius:5px;font-size:.74rem;font-weight:900;border:1px solid rgba(255,255,255,.3)
     }
     .tag-g{ color:#D4AF37; background:rgba(212,175,55,.15); border-color:rgba(212,175,55,.55) }
     .tag-a{ color:#86c7ff; background:rgba(134,199,255,.15); border-color:rgba(134,199,255,.55) }
+
+    @media (max-width: 420px){ .pitchX{ padding-top:66%; } }
     </style>
     """
 
-    # Sanitize positions per formation
+    # Sanitize / clamp positions by formation
     a_rows = _ensure_positions(a_rows, formation_a)
     b_rows = _ensure_positions(b_rows, formation_b)
     parts_a = formation_to_lines(formation_a) or [1,2,1]
     parts_b = formation_to_lines(formation_b) or [1,2,1]
 
-    y_top_margin, y_bot_margin = 12, 12
+    # compact vertical margins
+    y_top_margin, y_bot_margin = 8, 8
     inner_h = 100 - y_top_margin - y_bot_margin
-    left_min, left_max  = 8, 48     # left half span
-    right_min, right_max = 52, 92   # right half span
+
+    # half widths
+    left_min, left_max  = 6, 47
+    right_min, right_max = 53, 94
 
     def _place_side(rows: pd.DataFrame, parts: List[int], *, left_half: bool):
+        """
+        SIDE-ORIENTED placement:
+          - line index maps to X along the half (defence near goal, attack near centre line)
+          - within a line, players sorted by slot and spread along Y
+        """
         out = []
-        max_slots = max(parts + [1])
+        n_lines = max(1, len(parts))
+        half_span = (left_max - left_min) if left_half else (right_max - right_min)
+        x0 = left_min if left_half else right_min
 
-        # GK on goal line center
-        gk = rows[rows.get("is_gk")==True] if "is_gk" in rows.columns else pd.DataFrame()
+        # GK on goal center (near edge)
+        gk = rows[rows.get("is_gk")==True]
         if not gk.empty:
             r = gk.iloc[0]
             nm = str(r.get("name") or r.get("player_name") or "")
-            x = (left_min + 2) if left_half else (right_max - 2)
+            x = (x0 + (0.0 * half_span)) if left_half else (x0 - (0.0 * half_span))  # at edge
+            x += 1.5 if left_half else -1.5
             y = 50
             pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
             out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=True))
 
-        # Outfield by rows
-        for line_idx, slots in enumerate(parts):
-            y = y_top_margin + inner_h * ((line_idx + 0.5) / len(parts))
-            half_span = (left_max - left_min) if left_half else (right_max - right_min)
-            x0 = left_min if left_half else right_min
-            x_gap = half_span / (slots + 1)
-            line_df = rows[(rows.get("is_gk")!=True) & (rows.get("line")==line_idx)]
-            abs_offset = (max_slots - slots)//2
-            for j in range(slots):
-                abs_slot = abs_offset + j
-                p = line_df[line_df.get("slot")==abs_slot].head(1)
-                if len(p)==0: 
-                    continue
-                rr = p.iloc[0]
+        # For each line, compute its X and spread players vertically
+        for line_idx, exp_slots in enumerate(parts):
+            # progress from own goal to center line
+            prog = (line_idx + 1) / (n_lines + 1)   # (0,1) exclusive
+            x = (x0 + prog*half_span) if left_half else (x0 - prog*half_span)
+
+            line_df = rows[(rows.get("is_gk")!=True) & (rows.get("line")==line_idx)].copy()
+            if line_df.empty:
+                continue
+            # order by saved slot (so edits persist)
+            line_df["slot"] = pd.to_numeric(line_df["slot"], errors="coerce")
+            line_df = line_df.sort_values("slot", na_position="last").reset_index(drop=True)
+
+            count = len(line_df)
+            # vertical spacing across height
+            for j in range(count):
+                rr = line_df.iloc[j]
                 nm = str(rr.get("name") or rr.get("player_name") or "")
-                x = x0 + (j+1)*x_gap
+                y_prog = (j + 1) / (count + 1)       # (0,1) exclusive
+                y = y_top_margin + y_prog*inner_h
                 pill = stat_pill(int(rr.get("goals") or 0), int(rr.get("assists") or 0)) if show_stats else ""
                 out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=False))
         return out
@@ -412,127 +443,6 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
 
     html += _place_side(a_rows, parts_a, left_half=True)
     html += _place_side(b_rows, parts_b, left_half=False)
-
-    html.append("</div></div>")
-    st.markdown("".join(html), unsafe_allow_html=True)
-
-
-
-def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
-                 show_stats: bool = True, show_photos: bool = True):
-    """
-    Modern FotMob-style pitch:
-    - Real pitch lines (halfway, center circle, penalty boxes, goals).
-    - Lighter premium green.
-    - GK clearly distinguished with a GK chip + different bubble.
-    - Inline scoped CSS so it never depends on external files.
-    """
-    # Scoped CSS (only for this pitch)
-    css = """
-    <style>
-    .pitchM{position:relative;width:100%;padding-top:150%;border-radius:18px;overflow:hidden;
-      background:
-        radial-gradient(1200px 800px at 50% -35%, #2d6f3d 0%, #1f5a31 45%, #174b28 100%),
-        repeating-linear-gradient(0deg, rgba(255,255,255,.06) 0 14px, rgba(255,255,255,0) 14px 30px);
-      border:1px solid rgba(255,255,255,.16)}
-    .inner{position:absolute;inset:10px;border-radius:14px}
-
-    /* Lines layer sized in percent of inner box */
-    .lines{position:absolute;left:4%;top:4%;right:4%;bottom:4%}
-    .outline{position:absolute;inset:0;border:2px solid #ffffff}
-    .halfway{position:absolute;left:0;right:0;top:50%;height:0;border-top:2px solid #ffffff}
-    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:22%;height:22%;
-      border:2px solid #ffffff;border-radius:999px}
-    .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-      width:6px;height:6px;background:#ffffff;border-radius:999px}
-
-    /* Penalty boxes & goals (top is defending side) */
-    .box-top{position:absolute;left:18%;right:18%;top:0;height:22%;border:2px solid #ffffff;border-top:none}
-    .six-top{position:absolute;left:33%;right:33%;top:0;height:10.5%;border:2px solid #ffffff;border-top:none}
-    .pen-dot-top{position:absolute;left:50%;top:14%;transform:translate(-50%,-50%);
-      width:6px;height:6px;background:#ffffff;border-radius:999px}
-    .goal-top{position:absolute;left:44%;right:44%;top:-1.4%;height:1.4%;border:2px solid #ffffff;border-bottom:none}
-
-    .box-bot{position:absolute;left:18%;right:18%;bottom:0;height:22%;border:2px solid #ffffff;border-bottom:none}
-    .six-bot{position:absolute;left:33%;right:33%;bottom:0;height:10.5%;border:2px solid #ffffff;border-bottom:none}
-    .pen-dot-bot{position:absolute;left:50%;bottom:14%;transform:translate(-50%,50%);
-      width:6px;height:6px;background:#ffffff;border-radius:999px}
-    .goal-bot{position:absolute;left:44%;right:44%;bottom:-1.4%;height:1.4%;border:2px solid #ffffff;border-top:none}
-
-    /* Player layout */
-    .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.36rem;text-align:center}
-    .bubble{
-      width:clamp(54px, 6.6vw, 72px); height:clamp(54px, 6.6vw, 72px);
-      border-radius:999px; display:flex; align-items:center; justify-content:center; position:relative;
-      background:linear-gradient(180deg,#0e1620,#0b131b); border:2px solid #2f4860; box-shadow:0 6px 16px rgba(0,0,0,.35)
-    }
-    .bubble.motm{ border-color:#D4AF37; box-shadow:0 0 0 2px rgba(212,175,55,.22), 0 10px 22px rgba(212,175,55,.16) }
-    .bubble.gk{ background:linear-gradient(180deg,#0c1e2b,#0a1924); border-color:#4db6ff }
-    .chip-gk{
-      position:absolute; right:-6px; top:-6px; padding:.15rem .35rem; font-size:.68rem; font-weight:900;
-      border-radius:8px; background:rgba(77,182,255,.18); color:#bfe6ff; border:1px solid rgba(77,182,255,.45)
-    }
-    .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.95rem,1.1vw,1.05rem)}
-    .name{font-size:clamp(.88rem,1.05vw,1rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:140px}
-
-    /* G/A pill */
-    .pill{display:inline-flex;align-items:center;gap:.6rem; padding:.28rem .65rem; border-radius:999px;
-      background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); font-size:clamp(.9rem,1vw,.98rem)}
-    .tag{
-      display:inline-flex;align-items:center;justify-content:center;
-      width:20px;height:20px;border-radius:5px;font-size:.76rem;font-weight:900;border:1px solid rgba(255,255,255,.3)
-    }
-    .tag-g{ color:#D4AF37; background:rgba(212,175,55,.15); border-color:rgba(212,175,55,.55) }
-    .tag-a{ color:#86c7ff; background:rgba(134,199,255,.15); border-color:rgba(134,199,255,.55) }
-    </style>
-    """
-
-    # Sanitize + layout
-    rows = _ensure_positions(rows, formation)
-    parts = formation_to_lines(formation) or [1,2,1]
-
-    top_margin = 14   # more space for GK + top goal
-    bottom_margin = 12
-    inner_h = 100 - top_margin - bottom_margin
-    n_lines = max(1, len(parts))
-    max_slots = max(parts + [1])
-
-    html = [css, "<div class='pitchM'><div class='inner'>",
-            "<div class='lines'>"
-            "<div class='outline'></div>"
-            "<div class='halfway'></div>"
-            "<div class='center'></div>"
-            "<div class='center-dot'></div>"
-            "<div class='box-top'></div><div class='six-top'></div><div class='pen-dot-top'></div><div class='goal-top'></div>"
-            "<div class='box-bot'></div><div class='six-bot'></div><div class='pen-dot-bot'></div><div class='goal-bot'></div>"
-            "</div>"]
-
-    # GK = at top penalty area center by default (clear, near goal)
-    gk = rows[(rows.get("is_gk") == True)] if "is_gk" in rows.columns else pd.DataFrame()
-    if not gk.empty:
-        r = gk.iloc[0]
-        nm = str(r.get("name") or r.get("player_name") or "")
-        y = top_margin * 0.65        # close to the top box
-        x = 50
-        pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
-        html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill, is_gk=True))
-
-    # Outfield rows (defence to attack)
-    for line_idx, slots in enumerate(parts):
-        y = top_margin + inner_h * ((line_idx + 0.5) / n_lines)
-        x_gap = 100 / (slots + 1)
-        line_df = rows[(rows.get("is_gk") != True) & (rows.get("line") == line_idx)]
-        for j in range(slots):
-            x = (j + 1) * x_gap
-            abs_offset = (max_slots - slots) // 2
-            abs_slot = abs_offset + j
-            p = line_df[line_df.get("slot") == abs_slot].head(1)
-            if len(p) == 0:
-                continue
-            rr = p.iloc[0]
-            nm = str(rr.get("name") or rr.get("player_name") or "")
-            pill = stat_pill(int(rr.get("goals") or 0), int(rr.get("assists") or 0)) if show_stats else ""
-            html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill, is_gk=False))
 
     html.append("</div></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
@@ -858,15 +768,19 @@ def page_matches():
         fb = colf2.selectbox("Formation (Bibs)", preset_list,
                              index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
                              key=f"view_fb_{mid}")
-        if colf3.button("Save formations", key=f"save_forms_{mid}"):
-            s = service()
-            if not s:
-                st.error("Admin required.")
-            else:
-                s.table("matches").update({"formation_a": fa, "formation_b": fb}).eq("id", mid).execute()
-                clear_caches()
-                st.success("Formations updated.")
-                st.rerun()
+      if colf3.button("Save formations", key=f"save_forms_{mid}"):
+    s = service()
+    if not s:
+        st.error("Admin required.")
+    else:
+        side_count = int(m.get("side_count") or 5)
+        fa_s = validate_formation(fa, side_count)
+        fb_s = validate_formation(fb, side_count)
+        s.table("matches").update({"formation_a": fa_s, "formation_b": fb_s}).eq("id", mid).execute()
+        clear_caches()
+        st.success("Formations updated.")
+        st.rerun()
+
     else:
         fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
         fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
@@ -874,15 +788,16 @@ def page_matches():
     # read-only pitches
       # formations (admin picker stays the same above)
     # Ensure formations match side_count (5s vs 7s) even if DB has older values
-    side_count = int(m.get("side_count") or 5)
-    fa = validate_formation(m.get("formation_a"), side_count)
-    fb = validate_formation(m.get("formation_b"), side_count)
+  # --- enforce valid formation by side_count and render combined pitch ---
+side_count = int(m.get("side_count") or 5)
+fa = validate_formation(m.get("formation_a"), side_count)
+fb = validate_formation(m.get("formation_b"), side_count)
 
-    # Single combined pitch (both teams on one field)
-    st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
-    render_match_pitch_combined(
-        a_rows, b_rows, fa, fb, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
-    )
+st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
+render_match_pitch_combined(
+    a_rows, b_rows, fa, fb, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
+)
+
 
 
     # GA & MOTM editor
