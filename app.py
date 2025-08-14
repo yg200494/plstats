@@ -428,7 +428,10 @@ def _grid_to_line_abs(parts: List[int], x: int, y: int, cols: int = 24):
     return False, line, abs_slot
 
 def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
-    """Render on-pitch drag & drop; returns list of updates (dicts) or [] if no players; None if component missing."""
+    """
+    On-pitch drag & drop using streamlit-elements.
+    Returns list of updates (dicts) or [] if no players, or None if component missing.
+    """
     if not _PITCH_DND_AVAILABLE:
         return None
 
@@ -438,11 +441,11 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
         st.caption("No players found for this side.")
         return []
 
-    cols = 24  # horizontal grid resolution
-    layout = []
-    cards: list[tuple[str, pd.Series]] = []
+    cols = 24  # horizontal resolution of the grid
+    layout: List[dict] = []
+    cards: List[tuple[str, pd.Series]] = []
 
-    # Build a layout item per player + remember its id and data
+    # Build a dict-based layout item per player + remember its id and row data
     for _, r in rows.iterrows():
         pid = str(r["id"])
         is_gk = bool(r.get("is_gk"))
@@ -451,46 +454,77 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
         gx, gy = _line_abs_to_grid(parts, line, slot_abs, cols=cols)
 
         card_id = f"{keypref}_{pid}"
-        # Wider items = easier to grab on mobile
-        layout.append(dashboard.Item(card_id, int(gx), int(gy), 4, 3, isResizable=False))
+        # Wider/taller items = easier to grab, especially on mobile
+        layout.append({
+            "i": card_id,
+            "x": int(gx),
+            "y": int(gy),
+            "w": 4,
+            "h": 3,
+            "isDraggable": True,
+            "isResizable": False,
+            "moved": False,
+            "static": False,
+        })
         cards.append((card_id, r))
 
-    # Remember layout changes
+    # Remember layout changes in session state
     state_key = f"layout_{keypref}_{mid}"
     def _on_change(updated_layout: List[dict]):
-        st.session_state[state_key] = updated_layout
+        # Some builds pass a tuple; make sure we store a list of dicts
+        st.session_state[state_key] = [dict(item) for item in updated_layout] if updated_layout else []
 
-    # Render grid with items. IMPORTANT: use matching keys for children instead of wrapping with dashboard.Item.
+    # Render grid with items. IMPORTANT: child keys MUST match the "i" of each layout dict.
     with elements(f"el_{keypref}_{mid}"):
-        with dashboard.Grid(layout, cols=cols, rowHeight=30, preventCollision=True, compact=False, onLayoutChange=_on_change):
+        with dashboard.Grid(
+            layout,
+            cols=cols,
+            rowHeight=30,
+            preventCollision=True,
+            compact=False,
+            onLayoutChange=_on_change,
+        ):
             for card_id, r in cards:
                 name = r.get("name") or r.get("player_name") or ""
                 g = int(r.get("goals") or 0)
                 a = int(r.get("assists") or 0)
 
-                # The key MUST match the layout id (card_id)
-                with mui.Paper(key=card_id, elevation=4, sx={
-                    "borderRadius": 8, "p": 0.5, "textAlign": "center",
-                    "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
-                }):
+                # Use the same key as the layout item id so the grid mounts the child
+                with mui.Paper(
+                    key=card_id,
+                    elevation=4,
+                    sx={
+                        "borderRadius": 8,
+                        "p": 0.5,
+                        "textAlign": "center",
+                        "backgroundColor": "#0f231b",
+                        "border": "1px solid #1b3b2d",
+                        "color": "#dff7ec",
+                        "cursor": "grab",
+                    },
+                ):
                     with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
-                        mui.Box(initials(name), sx={
-                            "width": 36, "height": 36, "borderRadius": "999px",
-                            "display": "flex", "alignItems": "center", "justifyContent": "center",
-                            "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
-                        })
-                        mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
+                        mui.Box(
+                            initials(name),
+                            sx={
+                                "width": 36, "height": 36, "borderRadius": "999px",
+                                "display": "flex", "alignItems": "center", "justifyContent": "center",
+                                "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc",
+                                "userSelect": "none",
+                            },
+                        )
+                        mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem", "userSelect":"none"})
                     if g>0 or a>0:
                         with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
                             if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
                             if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
 
     # Translate updated grid positions back to DB fields
-    updates = []
-    lay = st.session_state.get(state_key)
+    updates: List[dict] = []
+    lay = st.session_state.get(state_key, [])
     if lay:
         # map id -> (x,y)
-        xy = {it["i"]: (int(it["x"]), int(it["y"])) for it in lay}
+        xy = {str(it["i"]): (int(it["x"]), int(it["y"])) for it in lay if "i" in it}
         for _, r in rows.iterrows():
             pid = str(r["id"])
             lid = f"{keypref}_{pid}"
