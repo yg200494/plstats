@@ -586,72 +586,83 @@ def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str):
 def _apply_list_dnd(containers: list[dict], formation: str) -> list[dict]:
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
+
 def dnd_list_editor_compat(team_rows: pd.DataFrame, formation: str, keypref: str, mid: str):
     """Reliable list-based DnD laid out by GK / R#S# / Bench. Always works."""
-    if not _LIST_DNД_AVAILABLE:  # <- NOTE: type carefully: _LIST_DND_AVAILABLE (no special chars)
+    if not _LIST_DND_AVAILABLE:
         return None
 
     rows = _ensure_positions(team_rows, formation)
     parts = formation_to_lines(formation)
-    max_slots = max(parts+[1])
+    max_slots = max(parts + [1])
 
     def enc(r): return f"{r['id']}|{r.get('name') or r.get('player_name') or ''}"
     def dec(tok):
         i = tok.find("|")
-        return (tok[:i], tok[i+1:]) if i>=0 else (tok, "")
+        return (tok[:i], tok[i+1:]) if i >= 0 else (tok, "")
 
+    # Build containers: GK, each R# S#, Bench
     gk_items, placed = [], set()
     for _, r in rows.iterrows():
-        if bool(r.get("is_gk")): gk_items.append(enc(r))
+        if bool(r.get("is_gk")):
+            gk_items.append(enc(r))
 
-    containers = [{"header":"GK","items":gk_items[:1]}]
+    containers = [{"header": "GK", "items": gk_items[:1]}]
+
     for i, slots in enumerate(parts):
-        offset = (max_slots - slots)//2
+        offset = (max_slots - slots) // 2
         for j in range(slots):
             abs_slot = offset + j
             header = f"R{i+1} S{j+1}"
             items = []
             for _, r in rows.iterrows():
-                if not bool(r.get("is_gk")) and int(r.get("line") or -1)==i and int(r.get("slot") or -999)==abs_slot:
-                    items.append(enc(r)); placed.add(r["id"])
-            containers.append({"header":header, "items":items})
+                if (not bool(r.get("is_gk"))) and int(r.get("line") or -1) == i and int(r.get("slot") or -999) == abs_slot:
+                    items.append(enc(r))
+                    placed.add(r["id"])
+            containers.append({"header": header, "items": items})
+
     bench = []
-    if len(gk_items)>1: bench.extend(gk_items[1:])
+    if len(gk_items) > 1:
+        bench.extend(gk_items[1:])
     for _, r in rows.iterrows():
         tok = enc(r)
         if (r["id"] not in placed) and (tok not in bench) and (not bool(r.get("is_gk"))):
             bench.append(tok)
-    containers.append({"header":"Bench","items":bench})
+    containers.append({"header": "Bench", "items": bench})
 
-    # 1 call that includes ALL containers so you can drag between any of them
+    # Drag & drop across all containers
     out = _sort_items(containers, multi_containers=True, key=f"compat_{keypref}_{mid}")
 
-    # Back to DB fields
+    # Convert back to DB fields
     updates = []
-    # GK = first in GK list
-    if out[0]["header"] == "GK" and out[0]["items"]:
+
+    # GK: first item in GK list
+    if out and out[0]["header"] == "GK" and out[0]["items"]:
         pid, _ = dec(out[0]["items"][0])
         updates.append({"id": pid, "is_gk": True, "line": None, "slot": None})
 
-    # Rows/slots
+    # Rows/slots:
     for c in out:
         h = c["header"]
-        if h in ("GK","Bench"): continue
+        if h in ("GK", "Bench"):
+            continue
         try:
             rpart, spart = h.split()
             line = int(rpart[1:]) - 1
             rel = int(spart[1:]) - 1
         except Exception:
             continue
-        slots = parts[line]; offset = (max_slots - slots)//2
+        slots = parts[line]
+        offset = (max_slots - slots) // 2
         abs_slot = offset + rel
         for tok in c["items"]:
             pid, _ = dec(tok)
             updates.append({"id": pid, "is_gk": False, "line": int(line), "slot": int(abs_slot)})
 
-    # de-dup by id (latest wins)
+    # Deduplicate by id (last assignment wins)
     uniq = {}
-    for u in updates: uniq[u["id"]] = u
+    for u in updates:
+        uniq[u["id"]] = u
     return list(uniq.values())
 
     updates = []
