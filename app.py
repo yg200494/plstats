@@ -440,9 +440,9 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
 
     cols = 24  # horizontal grid resolution
     layout = []
-    cards = []
+    cards: list[tuple[str, pd.Series]] = []
 
-    # Build a layout item per player + remember its data
+    # Build a layout item per player + remember its id and data
     for _, r in rows.iterrows():
         pid = str(r["id"])
         is_gk = bool(r.get("is_gk"))
@@ -450,10 +450,10 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
         slot_abs = None if is_gk else int(r.get("slot"))
         gx, gy = _line_abs_to_grid(parts, line, slot_abs, cols=cols)
 
+        card_id = f"{keypref}_{pid}"
         # Wider items = easier to grab on mobile
-        item = dashboard.Item(i=f"{keypref}_{pid}", x=int(gx), y=int(gy), w=4, h=3, isResizable=False)
-        layout.append(item)
-        cards.append((item, r))
+        layout.append(dashboard.Item(card_id, int(gx), int(gy), 4, 3, isResizable=False))
+        cards.append((card_id, r))
 
     # Remember layout changes
     state_key = f"layout_{keypref}_{mid}"
@@ -463,15 +463,14 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
     # Render grid with items
     with elements(f"el_{keypref}_{mid}"):
         with dashboard.Grid(layout, cols=cols, rowHeight=30, preventCollision=True, compact=False, onLayoutChange=_on_change):
-            for item, r in cards:
-                pid = str(r["id"])
+            for card_id, r in cards:
                 name = r.get("name") or r.get("player_name") or ""
                 g = int(r.get("goals") or 0)
                 a = int(r.get("assists") or 0)
 
-                # Each draggable chip MUST be wrapped in dashboard.Item(...)
-                with dashboard.Item(item):
-                    with mui.Paper(key=f"{keypref}_{pid}", elevation=4, sx={
+                # IMPORTANT: pass the item id string here (not the Item object)
+                with dashboard.Item(card_id):
+                    with mui.Paper(key=f"{card_id}_paper", elevation=4, sx={
                         "borderRadius": 8, "p": 0.5, "textAlign": "center",
                         "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
                     }):
