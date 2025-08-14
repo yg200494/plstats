@@ -1,105 +1,83 @@
-/* styles.css — clean FotMob-esque aesthetic (2025-08) */
+/* --- Powerleague: Black & Gold Theme --- */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap');
 
 :root{
-  --bg1:#0b1324; --bg2:#0a1a2f;
-  --card:rgba(15,23,42,.66); --card-br:rgba(255,255,255,.10);
-  --text:#e6edf3; --accent:#22c55e; --muted:#a7b1c2;
-  --chip:#ffffff; --chip-g:#22c55e; --chip-a:#60a5fa;
+  --bg:#0B0F14;          /* app background */
+  --panel:#111821;       /* cards/panels */
+  --muted:#9AA4AF;       /* secondary text */
+  --text:#E6EBF1;        /* main text */
+  --gold:#D4AF37;        /* primary gold */
+  --gold-2:#FFD87A;      /* lighter gold */
+  --line:#1B2735;        /* panel outline */
+  --pitch:#0E1611;       /* pitch green-black */
+  --pitch-line:#1b3b2d;
+  --success:#2BD576;     /* for W */
+  --draw:#F0B44B;        /* for D */
+  --loss:#E96363;        /* for L */
 }
 
-/* App background */
 html, body, [data-testid="stAppViewContainer"]{
-  background:linear-gradient(180deg,var(--bg1) 0%, var(--bg2) 100%) !important;
+  background:var(--bg) !important;
   color:var(--text) !important;
+  font-family:'Manrope', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
-footer, #MainMenu { display:none }
 
-/* Top banners (match header & MOTM strip) */
-.pl-banner{
-  background:linear-gradient(90deg,#0f172a 0%,#0b1324 100%);
-  border:1px solid rgba(255,255,255,.12);
-  border-radius:16px; padding:12px 16px;
-  display:flex; align-items:center; justify-content:space-between; gap:12px; color:#fff;
-  margin: 4px 0 12px 0;
+.block-container{padding-top:1rem !important; max-width:1200px;}
+.stButton>button, .stDownloadButton>button{
+  background:linear-gradient(180deg, var(--gold-2), var(--gold));
+  color:#121212; border:none; border-radius:12px; padding:.55rem .9rem; font-weight:800;
 }
-.pl-banner.slim{ justify-content:flex-start; gap:10px }
-.pl-title{font-weight:800; font-size:18px}
-.pl-sub{opacity:.85; font-size:12px}
-.pl-badge{background:var(--accent); color:#062616; font-weight:700; border-radius:999px; padding:6px 10px; font-size:12px; border:1px solid rgba(0,0,0,.25)}
+.stButton>button:hover, .stDownloadButton>button:hover{ filter:brightness(1.02) }
+
+.pl-banner{
+  background:var(--panel); border:1px solid var(--line); border-radius:16px;
+  padding:.8rem 1rem; display:flex; align-items:center; justify-content:space-between; gap:1rem;
+}
+.pl-banner.slim{ padding:.5rem .8rem; margin:.35rem 0; }
+.pl-title{ font-size:1.1rem; font-weight:800;}
+.pl-sub{ color:var(--muted); font-size:.9rem}
+.pl-badge{
+  display:inline-flex; align-items:center; gap:.4rem; font-weight:700;
+  background:#231a05; color:var(--gold-2); border:1px solid #3e3110; padding:.25rem .55rem; border-radius:999px
+}
 
 /* Pitch container */
-.pl-pitch{
+.pitch{
   position:relative; width:100%; padding-top:150%;
-  border-radius:20px; overflow:hidden; box-shadow:0 8px 22px rgba(0,0,0,.35);
-  border:1px solid rgba(255,255,255,.18);
+  background: radial-gradient(1200px 800px at 50% -20%, #162417 0%, #0e1711 45%, #0b120d 100%);
+  border-radius:20px; border:1px solid var(--pitch-line); overflow:hidden;
 }
-.pl-pitch svg{ position:absolute; inset:0 }
+.pitch-inner{ position:absolute; inset:10px; border-radius:16px; }
+.pitch-line{ position:absolute; left:6%; right:6%; border-top:1px solid rgba(255,255,255,.06); }
 
-/* Player spot */
-.pl-spot{
-  position:absolute; transform:translate(-50%,-50%);
-  display:flex; flex-direction:column; align-items:center;
-  text-align:center;
+/* Player dot stack */
+.p-slot{ position:absolute; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; gap:.25rem }
+.p-bubble{
+  width:56px; height:56px; border-radius:999px; display:flex; align-items:center; justify-content:center;
+  background:#0c2017; border:2px solid #274a3a; box-shadow:0 2px 10px rgba(0,0,0,.25)
 }
-.pl-name{
-  margin-top:8px;         /* extra breathing room below avatar */
-  font-size:13px; font-weight:700; color:#fff;
-  text-shadow:0 1px 2px rgba(0,0,0,.6); white-space:nowrap;
+.p-bubble.motm{ border-color:var(--gold); box-shadow:0 0 0 2px rgba(212,175,55,.25), 0 6px 18px rgba(212,175,55,.2) }
+.p-init{ font-weight:800; letter-spacing:.3px; color:#dff7ec }
+.p-name{ font-size:.85rem; font-weight:800; text-shadow:0 1px 0 rgba(0,0,0,.6) }
+.p-pill{
+  display:inline-flex; align-items:center; gap:.35rem; padding:.18rem .5rem;
+  background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12); border-radius:999px; font-size:.78rem
 }
+.p-ico{ display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px }
 
-/* Avatar ring + image/initials */
-.pl-avatar{
-  position:relative; width:86px; height:86px; border-radius:50%;
-  overflow:hidden; border:3px solid #ddd; background:#fff;
-  box-shadow:0 2px 10px rgba(0,0,0,.45)
-}
-.pl-avatar.pl-large{ width:160px; height:160px }
-.pl-avatar-img{ width:100%; height:100%; object-fit:cover }
-.pl-avatar-init{
-  width:100%; height:100%; display:flex; align-items:center; justify-content:center;
-  background:#fff; color:#1f2937; font-weight:800; font-size:28px; letter-spacing:.5px
-}
+/* Tables */
+table{ width:100% }
+thead tr{ background:#0e141c }
+thead th{ position:sticky; top:0; background:#0e141c; border-bottom:1px solid var(--line) }
+tbody tr{ border-bottom:1px dashed rgba(255,255,255,.06) }
+tbody tr:hover{ background:rgba(255,255,255,.02) }
+th, td{ padding:.5rem .6rem }
 
-/* MOTM star */
-.pl-motm{
-  position:absolute; top:-8px; right:-8px;
-  background:gold; color:#000; border-radius:50%;
-  padding:2px 4px; font-size:12px; border:1px solid rgba(0,0,0,.25)
+/* Form tags for W/D/L */
+.form-badge{ display:inline-flex; gap:.25rem }
+.form-badge .w, .form-badge .d, .form-badge .l{
+  width:20px; height:20px; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:.7rem; font-weight:800
 }
-
-/* Chips for goals/assists */
-.pl-chips{ display:flex; gap:6px; margin-top:8px }
-.pl-chip{
-  background:rgba(255,255,255,.92); color:#111;
-  padding:2px 8px; border-radius:999px; font-size:12px;
-  border:1px solid rgba(17,17,17,.08); box-shadow:0 1px 2px rgba(0,0,0,.15)
-}
-.pl-chip-g{ border-color:rgba(34,197,94,.35) }   /* goals */
-.pl-chip-a{ border-color:rgba(96,165,250,.35) }  /* assists */
-
-/* Stat cards (profile + streaks) */
-.pl-cards{ display:flex; flex-wrap:wrap; gap:10px; margin:8px 0 14px 0 }
-.pl-card{
-  background:var(--card); border:1px solid var(--card-br);
-  border-radius:14px; padding:12px 14px; min-width:120px; text-align:center
-}
-.pl-card-val{ font-weight:800; font-size:20px; color:#fff }
-.pl-card-lbl{ color:var(--muted); font-size:12px; margin-top:2px }
-
-/* Dataframe tweaks (optional, subtle) */
-[data-testid="stDataFrame"] table thead tr th{
-  background:rgba(255,255,255,.06);
-  color:#eaf1f8;
-}
-[data-testid="stDataFrame"] table tbody tr td{
-  color:#eaf1f8;
-  border-color:rgba(255,255,255,.06);
-}
-
-/* Mobile tweaks (iPhone) */
-@media (max-width: 480px){
-  .pl-title{ font-size:16px }
-  .pl-avatar{ width:72px; height:72px }
-  .pl-name{ font-size:12px }
-  .pl-chip{ font-size:11px; padding:2px 7px }
-}
+.form-badge .w{ background:rgba(43,213,118,.15); color:#2BD576; border:1px solid rgba(43,213,118,.35) }
+.form-badge .d{ background:rgba(240,180,75,.12); color:#F0B44B; border:1px solid rgba(240,180,75,.35) }
+.form-badge .l{ background:rgba(233,99,99,.12); color:#E96363; border:1px solid rgba(233,99,99,.35) }
