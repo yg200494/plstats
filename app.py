@@ -342,15 +342,15 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                                 team_a: str, team_b: str,
                                 show_stats: bool=True):
     """
-    One premium pitch with both teams on opposite halves, compact aspect for mobile.
-    SIDE-ORIENTED: lines go left→center (Team A) and right→center (Team B).
-    Players in a line are spaced vertically within their half.
+    One premium pitch with both teams on opposite halves, compact & iPhone-friendly.
+    SIDE-ORIENTED: lines run goal→center along X for each half (mirrored for Team B).
+    Players in a line are spread vertically to avoid overlap.
     """
+    # Scoped CSS (compact landscape aspect)
     css = """
     <style>
     .pitchX{
-      position:relative;width:100%;
-      padding-top:62%; /* compact landscape aspect */
+      position:relative;width:100%;padding-top:62%;
       border-radius:18px;overflow:hidden;
       background:
         repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 12px, rgba(255,255,255,0) 12px 26px),
@@ -365,20 +365,17 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
       border:2px solid #ffffff;border-radius:999px}
     .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
-    /* Penalty boxes & goals left/right */
     .box-left{position:absolute;left:0;top:18%;bottom:18%;width:18%;border:2px solid #ffffff;border-left:none}
     .six-left{position:absolute;left:0;top:36%;bottom:36%;width:8%;border:2px solid #ffffff;border-left:none}
     .pen-dot-left{position:absolute;left:12%;top:50%;transform:translate(-50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
     .goal-left{position:absolute;left:-1.2%;top:46%;bottom:46%;width:1.2%;border:2px solid #ffffff;border-right:none}
-
     .box-right{position:absolute;right:0;top:18%;bottom:18%;width:18%;border:2px solid #ffffff;border-right:none}
     .six-right{position:absolute;right:0;top:36%;bottom:36%;width:8%;border:2px solid #ffffff;border-right:none}
     .pen-dot-right{position:absolute;right:12%;top:50%;transform:translate(50%,-50%);
       width:6px;height:6px;background:#ffffff;border-radius:999px}
     .goal-right{position:absolute;right:-1.2%;top:46%;bottom:46%;width:1.2%;border:2px solid #ffffff;border-left:none}
 
-    /* Players */
     .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.34rem;text-align:center}
     .bubble{
       width:clamp(52px, 6.2vw, 70px); height:clamp(52px, 6.2vw, 70px);
@@ -393,8 +390,6 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     }
     .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.92rem,1vw,1.02rem)}
     .name{font-size:clamp(.86rem,.98vw,.98rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:130px}
-
-    /* G/A pill */
     .pill{display:inline-flex;align-items:center;gap:.58rem; padding:.24rem .58rem; border-radius:999px;
       background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.18); font-size:clamp(.88rem,.96vw,.96rem)}
     .tag{
@@ -403,10 +398,12 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     }
     .tag-g{ color:#D4AF37; background:rgba(212,175,55,.15); border-color:rgba(212,175,55,.55) }
     .tag-a{ color:#86c7ff; background:rgba(134,199,255,.15); border-color:rgba(134,199,255,.55) }
-
     @media (max-width: 420px){ .pitchX{ padding-top:66%; } }
     </style>
     """
+
+    def lerp(a: float, b: float, t: float) -> float:
+        return a + (b - a) * t
 
     # Sanitize / clamp positions by formation
     a_rows = _ensure_positions(a_rows, formation_a)
@@ -418,52 +415,51 @@ def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
     y_top_margin, y_bot_margin = 8, 8
     inner_h = 100 - y_top_margin - y_bot_margin
 
-    # half widths
-    left_min, left_max  = 6, 47
-    right_min, right_max = 53, 94
+    # half spans
+    left_min, left_max  = 6, 47    # Team A x from 6% to 47%
+    right_min, right_max = 53, 94  # Team B x from 94% to 53% (note: start at right_max)
 
     def _place_side(rows: pd.DataFrame, parts: List[int], *, left_half: bool):
         """
         SIDE-ORIENTED placement:
-          - line index maps to X along the half (defence near goal, attack near centre line)
+          - line index maps to X along the half (goal-edge → centre line)
           - within a line, players sorted by slot and spread along Y
         """
         out = []
         n_lines = max(1, len(parts))
-        half_span = (left_max - left_min) if left_half else (right_max - right_min)
-        x0 = left_min if left_half else right_min
 
-        # GK on goal center (near edge)
-        gk = rows[rows.get("is_gk")==True]
+        # GK at t≈-0.03 so it sits just inside the goal edge
+        gk = rows[rows.get("is_gk") == True]
         if not gk.empty:
             r = gk.iloc[0]
             nm = str(r.get("name") or r.get("player_name") or "")
-            x = (x0 + (0.0 * half_span)) if left_half else (x0 - (0.0 * half_span))  # at edge
-            x += 1.5 if left_half else -1.5
+            if left_half:
+                x = lerp(left_min, left_max, -0.03)   # slightly left of first line, near goal
+            else:
+                x = lerp(right_max, right_min, -0.03) # slightly right of first line, near goal
             y = 50
             pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
             out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=True))
 
-        # For each line, compute its X and spread players vertically
-        for line_idx, exp_slots in enumerate(parts):
-            # progress from own goal to center line
-            prog = (line_idx + 1) / (n_lines + 1)   # (0,1) exclusive
-            x = (x0 + prog*half_span) if left_half else (x0 - prog*half_span)
+        # Each line gets an X position that progresses toward the center line
+        for line_idx in range(n_lines):
+            t = (line_idx + 1) / (n_lines + 1)  # (0,1) exclusive
+            x = lerp(left_min, left_max, t) if left_half else lerp(right_max, right_min, t)
 
-            line_df = rows[(rows.get("is_gk")!=True) & (rows.get("line")==line_idx)].copy()
+            line_df = rows[(rows.get("is_gk") != True) & (rows.get("line") == line_idx)].copy()
             if line_df.empty:
                 continue
-            # order by saved slot (so edits persist)
+
+            # keep saved slot order (or NaNs at end)
             line_df["slot"] = pd.to_numeric(line_df["slot"], errors="coerce")
             line_df = line_df.sort_values("slot", na_position="last").reset_index(drop=True)
 
             count = len(line_df)
-            # vertical spacing across height
             for j in range(count):
                 rr = line_df.iloc[j]
                 nm = str(rr.get("name") or rr.get("player_name") or "")
-                y_prog = (j + 1) / (count + 1)       # (0,1) exclusive
-                y = y_top_margin + y_prog*inner_h
+                y_t = (j + 1) / (count + 1)
+                y = y_top_margin + y_t * inner_h
                 pill = stat_pill(int(rr.get("goals") or 0), int(rr.get("assists") or 0)) if show_stats else ""
                 out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=False))
         return out
