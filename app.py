@@ -1,5 +1,6 @@
 import io
 from typing import Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -10,64 +11,64 @@ from supabase import create_client, Client
 # =========================
 # App config & global style
 # =========================
-st.set_page_config(page_title="Powerleague Stats", page_icon="⚽", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Powerleague Stats",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 CSS = """
 <style>
-:root {
-  --pitch-green:#1f8a3b;
+:root{
+  --bg1:#0b1324;
+  --bg2:#0a1a2f;
+  --card:rgba(15,23,42,.66);
+  --card-br:rgba(255,255,255,.10);
   --chip-bg:rgba(255,255,255,.10);
-  --chip-br:rgba(255,255,255,.25);
-  --card-bg:rgba(15,23,42,.65);
+  --chip-br:rgba(255,255,255,.30);
+  --green1:#2fb25c; --green2:#1c7a3a; --green3:#0f5a2b;
 }
-html, body, [data-testid="stAppViewContainer"] {
-  background: linear-gradient(180deg, #0b1324 0%, #0a1a2f 100%);
-  color: #e6edf3;
+html,body,[data-testid="stAppViewContainer"]{
+  background: linear-gradient(180deg,var(--bg1) 0%, var(--bg2) 100%);
+  color:#e6edf3;
 }
 footer,#MainMenu{display:none}
-.card{
-  background:var(--card-bg);
-  border:1px solid rgba(255,255,255,.08);
-  border-radius:16px;
-  padding:16px;
-}
+.card{background:var(--card);border:1px solid var(--card-br);border-radius:16px;padding:16px}
 .banner{
   background:linear-gradient(90deg,#0f172a 0%,#0b1324 100%);
-  color:#fff;
-  padding:14px 16px;
-  border-radius:16px;
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  border:1px solid rgba(255,255,255,.12);
+  border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:14px 16px;
+  display:flex; align-items:center; justify-content:space-between; gap:12px; color:#fff;
 }
 .banner .title{font-size:18px;font-weight:700}
 .banner .sub{opacity:.8;font-size:13px}
-.badge{
-  background:#22c55e;color:#062616;font-weight:700;border-radius:999px;
-  padding:6px 12px;font-size:12px;border:1px solid rgba(0,0,0,.2)
-}
+.badge{background:#22c55e;color:#062616;font-weight:700;border-radius:999px;padding:6px 12px;font-size:12px;border:1px solid rgba(0,0,0,.25)}
+.hr{height:1px; background:rgba(255,255,255,.10); margin:10px 0 16px}
+
 .pitch{
-  background:radial-gradient(ellipse at 50% 10%, #2fb25c 0%, #1c7a3a 65%, #0f5a2b 100%);
-  border-radius:22px;padding:18px;border:1px solid rgba(255,255,255,.16);
-  box-shadow:0 10px 30px rgba(0,0,0,.35); min-height:520px
+  background:radial-gradient(ellipse at 50% 8%, var(--green1) 0%, var(--green2) 60%, var(--green3) 100%);
+  border-radius:22px; padding:18px; border:1px solid rgba(255,255,255,.16);
+  box-shadow:0 10px 30px rgba(0,0,0,.35); min-height:520px;
 }
 .pitch .grid{display:grid;gap:22px}
 .line{display:grid;gap:12px}
 .slot{display:flex;align-items:center;justify-content:center}
+
 .chip{
-  display:inline-flex;align-items:center;gap:10px;
-  background:var(--chip-bg);
-  border:1px solid var(--chip-br);
-  padding:8px 12px;border-radius:18px;
-  font-size:15px;line-height:1.1; color:#fff; max-width:100%;
+  display:inline-flex; align-items:center; gap:10px;
+  background:var(--chip-bg); border:1px solid var(--chip-br);
+  padding:9px 12px; border-radius:18px; font-size:15px; line-height:1.1; color:#fff; max-width:100%;
 }
-.chip img{
-  width:28px;height:28px;border-radius:50%;object-fit:cover;
-  border:1px solid rgba(255,255,255,.35)
-}
-.chip .meta{font-size:12px;opacity:.9}
-.hr{height:1px;background:rgba(255,255,255,.08);margin:8px 0 16px}
+.chip img{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid rgba(255,255,255,.35)}
+.chip .meta{font-size:12px; opacity:.9}
+
 .kv{display:flex;gap:10px;flex-wrap:wrap}
 .kv .k{opacity:.8}
+.smallcap{opacity:.8; font-size:13px}
+.edit-slot-btn{
+  width:100%; height:42px; border-radius:10px; border:1px dashed rgba(255,255,255,.25);
+  background:rgba(255,255,255,.04);
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -151,7 +152,6 @@ def upload_avatar(file, name):
     img = Image.open(file).convert("RGBA")
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     key = f"{name.lower().replace(' ','_')}.png"
-    # upsert
     try:
         s.storage.from_(AVATAR_BUCKET).upload(key, buf.getvalue(), {"content-type":"image/png","upsert":"true"})
     except Exception:
@@ -245,13 +245,12 @@ def player_agg(l, season=None, min_games=0, last_gw=None):
     if min_games>0: out = out[out["gp"]>=min_games]
     return out
 
-# Pair stats (duos, nemesis, best teammate)
+# ---------- Pair tables (Duos / Nemesis) ----------
 def duo_table(lfact: pd.DataFrame, player: str, season: Optional[int]=None):
     df = lfact.copy()
     if season is not None: df = df[df["season"]==season]
     my = df[df["name"]==player]
     if my.empty: return pd.DataFrame(columns=["teammate","gp","w","d","l","win_pct","ga"])
-    # same match & same team = teammate game
     t = my.merge(df, on=["match_id","team"], suffixes=("_me","_tm"))
     t = t[t["name_tm"]!=player]
     if t.empty: return pd.DataFrame(columns=["teammate","gp","w","d","l","win_pct","ga"])
@@ -269,7 +268,6 @@ def nemesis_table(lfact: pd.DataFrame, player: str, season: Optional[int]=None):
     if season is not None: df = df[df["season"]==season]
     my = df[df["name"]==player]
     if my.empty: return pd.DataFrame(columns=["opponent","gp","w","d","l","win_pct"])
-    # same match & opposite team = opponent
     opp = my.merge(df, on=["match_id"], suffixes=("_me","_op"))
     opp = opp[opp["team_me"]!=opp["team_op"]]
     opp = opp[opp["name_op"]!=player]
@@ -280,11 +278,39 @@ def nemesis_table(lfact: pd.DataFrame, player: str, season: Optional[int]=None):
     l = opp[opp["result_me"]=="L"].groupby("name_op").size().reindex(gp.index, fill_value=0)
     out = pd.DataFrame({"opponent":gp.index,"gp":gp.values,"w":w.values,"d":d.values,"l":l.values,
                         "win_pct": ((w.values/np.maximum(gp.values,1))*100).round(1)})
-    # "nemesis" = lowest win% with at least 3 games (tweak min as needed)
     return out.sort_values(["win_pct","gp"], ascending=[True,False])
 
+def duo_global(lfact: pd.DataFrame, min_gp: int = 3):
+    df = lfact.copy()
+    a = df.merge(df, on=["match_id","team"], suffixes=("_a","_b"))
+    a = a[a["name_a"] < a["name_b"]]  # unique pair
+    if a.empty: return pd.DataFrame(columns=["pair","gp","win_pct"])
+    gp = a.groupby(["name_a","name_b"]).size()
+    w = a[a["result_a"]=="W"].groupby(["name_a","name_b"]).size().reindex(gp.index, fill_value=0)
+    out = pd.DataFrame({"gp":gp, "w":w}).reset_index()
+    out["win_pct"] = ((out["w"]/out["gp"])*100).round(1)
+    out["pair"] = out["name_a"]+" + "+out["name_b"]
+    out = out[out["gp"]>=min_gp].sort_values(["win_pct","gp"], ascending=[False,False])[["pair","gp","win_pct"]]
+    return out
+
+def nemesis_global(lfact: pd.DataFrame, min_gp: int = 3):
+    df = lfact.copy()
+    a = df.merge(df, on=["match_id"], suffixes=("_a","_b"))
+    a = a[a["team_a"]!=a["team_b"]]
+    a = a[a["name_a"] < a["name_b"]]
+    if a.empty: return pd.DataFrame(columns=["pair","gp","win_pct_vs"])
+    gp = a.groupby(["name_a","name_b"]).size()
+    w_a = a[a["result_a"]=="W"].groupby(["name_a","name_b"]).size().reindex(gp.index, fill_value=0)
+    w_b = a[a["result_b"]=="W"].groupby(["name_a","name_b"]).size().reindex(gp.index, fill_value=0)
+    # win rate of the first named vs the second
+    win_pct_a = ((w_a/gp)*100).round(1)
+    out = pd.DataFrame({"gp":gp, "win_pct_vs":win_pct_a}).reset_index()
+    out["pair"] = out["name_a"]+" vs "+out["name_b"]
+    out = out[out["gp"]>=min_gp].sort_values(["win_pct_vs","gp"], ascending=[True,False])[["pair","gp","win_pct_vs"]]
+    return out
+
 # =========================
-# Pitch rendering
+# Pitch display (read-only)
 # =========================
 def auto_assign_positions(rows: pd.DataFrame, formation: str) -> pd.DataFrame:
     lines = formation_to_lines(formation); max_slots = max(lines)
@@ -323,7 +349,91 @@ def draw_pitch(formation, rows, show_photos=True):
     st.markdown(f'<div class="pitch"><div class="grid">{"".join(html)}</div></div>', unsafe_allow_html=True)
 
 # =========================
-# Admin updates
+# Tap-to-place lineup editor
+# =========================
+def _formation_slots(formation: str):
+    lines = formation_to_lines(formation)
+    max_slots = max(lines)
+    offsets = [(max_slots - s)//2 for s in lines]
+    return lines, max_slots, offsets
+
+def place_player(mid: str, team_rows: pd.DataFrame, formation: str, player_id: str, line_i: int, grid_slot: int):
+    """Persist: clear any occupant of (line_i,grid_slot), set selected player's line/slot."""
+    s = service()
+    if not s: st.error("Admin required."); return
+    # find occupant at this cell
+    occ = team_rows[(team_rows["line"]==line_i) & (team_rows["slot"]==grid_slot)]
+    payload=[]
+    for _,r in occ.iterrows():
+        payload.append({"id": str(r["id"]), "line": None, "slot": None})
+    # set selected
+    payload.append({"id": str(player_id), "line": int(line_i), "slot": int(grid_slot)})
+    s.table("lineups").upsert(payload, on_conflict="id").execute()
+    clear_caches()
+    st.success("Position saved.")
+
+def set_gk(mid: str, team_rows: pd.DataFrame, formation: str, player_id: str):
+    """Set GK & center the keeper on back line."""
+    s = service()
+    if not s: st.error("Admin required."); return
+    lines, max_slots, _ = _formation_slots(formation)
+    center = max_slots//2
+    # unset GK for others
+    payload=[]
+    for _,r in team_rows.iterrows():
+        payload.append({"id": str(r["id"]), "is_gk": bool(r["id"]==player_id)})
+    # also place on back line center
+    payload.append({"id": str(player_id), "line": 0, "slot": center})
+    s.table("lineups").upsert(payload, on_conflict="id").execute()
+    clear_caches()
+    st.success("GK updated.")
+
+def pitch_editor(mid: str, team_name: str, formation: str, team_rows: pd.DataFrame, key_prefix: str):
+    """UI: select player -> tap slot to place (saves to DB)."""
+    team_rows = team_rows.copy()
+    st.caption(f"{team_name} — tap a slot to place the selected player")
+    # bench selector
+    team_rows["display"] = team_rows.apply(lambda r: f"{r['name']} ({'GK' if r.get('is_gk') else 'Outfield'})", axis=1)
+    bench_opts = team_rows["display"].tolist()
+    bench_map = {team_rows.iloc[i]["display"]: str(team_rows.iloc[i]["id"]) for i in range(len(team_rows))}
+    pick = st.selectbox("Player", bench_opts, key=f"{key_prefix}_pick")
+    pid = bench_map.get(pick)
+
+    c1,c2 = st.columns([1,1])
+    with c1:
+        if st.button("Set as GK", key=f"{key_prefix}_setgk"):
+            set_gk(mid, team_rows, formation, pid); st.rerun()
+    with c2:
+        if st.button("Clear position", key=f"{key_prefix}_clear"):
+            s = service()
+            if not s: st.error("Admin required.")
+            else:
+                s.table("lineups").upsert([{"id": pid, "line": None, "slot": None}], on_conflict="id").execute()
+                clear_caches(); st.success("Cleared."); st.rerun()
+
+    # grid buttons
+    lines, max_slots, offsets = _formation_slots(formation)
+    for line_i, slots in enumerate(lines):
+        cols = st.columns(max_slots)
+        for grid_slot in range(max_slots):
+            # is this grid cell active for this line?
+            start = offsets[line_i]; end = start + slots
+            if grid_slot < start or grid_slot >= end:
+                with cols[grid_slot]:
+                    st.write("")  # spacer
+                continue
+            with cols[grid_slot]:
+                # show occupant (if any)
+                occ = team_rows[(team_rows["line"]==line_i) & (team_rows["slot"]==grid_slot)]
+                label = " "
+                if not occ.empty:
+                    nm = occ.iloc[0]["name"]
+                    label = f"{nm}"
+                if st.button(label, key=f"{key_prefix}_{line_i}_{grid_slot}", use_container_width=True):
+                    place_player(mid, team_rows, formation, pid, line_i, grid_slot); st.rerun()
+
+# =========================
+# Admin updates (non-editor)
 # =========================
 def update_match_formations(match_id: str, formation_a: str, formation_b: str):
     s = service()
@@ -375,10 +485,10 @@ def page_matches():
     seasons = sorted(matches["season"].dropna().unique().tolist())
     sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0)
     opts = matches[matches["season"]==sel_season].sort_values("gw")
-    label = opts.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {r['score_a']}–{r['score_b']} {r['team_b']}", axis=1).tolist()
-    map_idx = {label[i]: opts.iloc[i]["id"] for i in range(len(opts))}
-    sel_label = st.selectbox("Match", label)
-    mid = str(map_idx[sel_label])
+    labels = opts.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {r['score_a']}–{r['score_b']} {r['team_b']}", axis=1).tolist()
+    id_map = {labels[i]: str(opts.iloc[i]["id"]) for i in range(len(opts))}
+    sel_label = st.selectbox("Match", labels)
+    mid = id_map[sel_label]
 
     m = matches[matches["id"].astype(str)==mid].iloc[0]
     show_photos = st.toggle("Show photos", True, key=f"sp_{mid}")
@@ -407,7 +517,7 @@ def page_matches():
         draw_pitch(m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1"), b_rows, show_photos)
 
     if st.session_state.get("is_admin"):
-        with st.expander("✏️ Edit match"):
+        with st.expander("✏️ Edit match (formations & positions)"):
             sc = int(m.get("side_count") or 5)
             presets5 = ["1-2-1","1-3","2-2","3-1"]; presets7=["2-1-2-1","3-2-1","2-3-1"]
             presets = presets7 if sc==7 else presets5
@@ -416,26 +526,12 @@ def page_matches():
             fb = colf2.selectbox("Formation (Bibs)", presets, index=presets.index(m.get("formation_b") or presets[0]) if (m.get("formation_b") in presets) else 0)
             if colf3.button("Save formations"): update_match_formations(mid, fa, fb); st.rerun()
 
-            st.markdown("**Positions (line / slot / GK)**")
-            def editor(df, team_key):
-                if df.empty: st.caption("No players."); return df
-                dfv = df[["id","name","goals","assists","is_gk","line","slot"]].copy()
-                dfv["line"] = pd.to_numeric(dfv.get("line"), errors="coerce")
-                dfv["slot"] = pd.to_numeric(dfv.get("slot"), errors="coerce")
-                return st.data_editor(
-                    dfv, hide_index=True,
-                    disabled=["id","name","goals","assists"],
-                    column_config={
-                        "is_gk": st.column_config.CheckboxColumn("GK"),
-                        "line": st.column_config.NumberColumn("Line", step=1, min_value=0),
-                        "slot": st.column_config.NumberColumn("Slot", step=1, min_value=0),
-                    },
-                    key=f"edit_{team_key}_{mid}"
-                )
-            ea = editor(a_rows, "A"); eb = editor(b_rows, "B")
-            colb1, colb2 = st.columns(2)
-            if colb1.button("💾 Save Non-bibs positions"): update_lineup_positions(ea); st.rerun()
-            if colb2.button("💾 Save Bibs positions"): update_lineup_positions(eb); st.rerun()
+            st.markdown("**Tap-to-place editor**")
+            ea, eb = st.columns(2)
+            with ea:
+                pitch_editor(mid, m["team_a"], fa or m.get("formation_a") or "1-2-1", a_rows, key_prefix=f"editA_{mid}")
+            with eb:
+                pitch_editor(mid, m["team_b"], fb or m.get("formation_b") or "1-2-1", b_rows, key_prefix=f"editB_{mid}")
 
 def page_players():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups()
@@ -478,7 +574,7 @@ def page_players():
                 f'</div></div>', unsafe_allow_html=True
             )
 
-        # Duos & Nemesis
+        # Duos & Nemesis (per player)
         st.markdown("#### Duos & Nemesis")
         colduo, colnem = st.columns(2)
         with colduo:
@@ -520,6 +616,7 @@ def page_stats():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups()
     lfact, _ = build_fact(players, matches, lineups)
     st.subheader("Stats")
+
     c1,c2,c3,c4 = st.columns(4)
     seasons = sorted(matches["season"].dropna().unique().tolist()) if not matches.empty else []
     season = c1.selectbox("Season", [None]+seasons, index=0)
@@ -552,9 +649,7 @@ def page_stats():
         df = df.sort_values(by, ascending=False)
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-    cnt=0
     for r in df.head(top_n).to_dict(orient="records"):
-        cnt+=1
         name = r.get("name") or r.get("player_name") or "Unknown"
         photo = (r.get("photo") or r.get("photo_url")) if show_photos else None
         if metric=="Goals": val=r.get("goals",0)
@@ -568,6 +663,20 @@ def page_stats():
         cA,cB = st.columns([6,1])
         with cA: st.markdown(chip(name, r.get("goals",0), r.get("assists",0), photo), unsafe_allow_html=True)
         with cB: st.metric(metric, val)
+
+    st.markdown("### Duos (Global) · min 3 GP")
+    dg = duo_global(lfact, min_gp=3)
+    if dg.empty: st.caption("—")
+    else:
+        for _,r in dg.head(10).iterrows():
+            st.write(f"👥 {r['pair']} — {r['win_pct']}% · GP {int(r['gp'])}")
+
+    st.markdown("### Nemesis (Global) · min 3 GP")
+    ng = nemesis_global(lfact, min_gp=3)
+    if ng.empty: st.caption("—")
+    else:
+        for _,r in ng.head(10).iterrows():
+            st.write(f"⚔️ {r['pair']} — {r['win_pct_vs']}% · GP {int(r['gp'])}")
 
 def page_awards():
     aw = fetch_awards()
