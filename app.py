@@ -586,6 +586,73 @@ def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str):
 def _apply_list_dnd(containers: list[dict], formation: str) -> list[dict]:
     parts = formation_to_lines(formation)
     max_slots = max(parts+[1])
+def dnd_list_editor_compat(team_rows: pd.DataFrame, formation: str, keypref: str, mid: str):
+    """Reliable list-based DnD laid out by GK / R#S# / Bench. Always works."""
+    if not _LIST_DNД_AVAILABLE:  # <- NOTE: type carefully: _LIST_DND_AVAILABLE (no special chars)
+        return None
+
+    rows = _ensure_positions(team_rows, formation)
+    parts = formation_to_lines(formation)
+    max_slots = max(parts+[1])
+
+    def enc(r): return f"{r['id']}|{r.get('name') or r.get('player_name') or ''}"
+    def dec(tok):
+        i = tok.find("|")
+        return (tok[:i], tok[i+1:]) if i>=0 else (tok, "")
+
+    gk_items, placed = [], set()
+    for _, r in rows.iterrows():
+        if bool(r.get("is_gk")): gk_items.append(enc(r))
+
+    containers = [{"header":"GK","items":gk_items[:1]}]
+    for i, slots in enumerate(parts):
+        offset = (max_slots - slots)//2
+        for j in range(slots):
+            abs_slot = offset + j
+            header = f"R{i+1} S{j+1}"
+            items = []
+            for _, r in rows.iterrows():
+                if not bool(r.get("is_gk")) and int(r.get("line") or -1)==i and int(r.get("slot") or -999)==abs_slot:
+                    items.append(enc(r)); placed.add(r["id"])
+            containers.append({"header":header, "items":items})
+    bench = []
+    if len(gk_items)>1: bench.extend(gk_items[1:])
+    for _, r in rows.iterrows():
+        tok = enc(r)
+        if (r["id"] not in placed) and (tok not in bench) and (not bool(r.get("is_gk"))):
+            bench.append(tok)
+    containers.append({"header":"Bench","items":bench})
+
+    # 1 call that includes ALL containers so you can drag between any of them
+    out = _sort_items(containers, multi_containers=True, key=f"compat_{keypref}_{mid}")
+
+    # Back to DB fields
+    updates = []
+    # GK = first in GK list
+    if out[0]["header"] == "GK" and out[0]["items"]:
+        pid, _ = dec(out[0]["items"][0])
+        updates.append({"id": pid, "is_gk": True, "line": None, "slot": None})
+
+    # Rows/slots
+    for c in out:
+        h = c["header"]
+        if h in ("GK","Bench"): continue
+        try:
+            rpart, spart = h.split()
+            line = int(rpart[1:]) - 1
+            rel = int(spart[1:]) - 1
+        except Exception:
+            continue
+        slots = parts[line]; offset = (max_slots - slots)//2
+        abs_slot = offset + rel
+        for tok in c["items"]:
+            pid, _ = dec(tok)
+            updates.append({"id": pid, "is_gk": False, "line": int(line), "slot": int(abs_slot)})
+
+    # de-dup by id (latest wins)
+    uniq = {}
+    for u in updates: uniq[u["id"]] = u
+    return list(uniq.values())
 
     updates = []
     def header_to_pos(h: str) -> tuple[int|None, int|None]:
@@ -632,12 +699,32 @@ def header():
     with left:
         st.title("⚽ Powerleague Stats")
 
-    with right:
-        if "is_admin" not in st.session_state:
-            st.session_state["is_admin"] = False
+    # defaults for switches
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
+    if "compat_dnd" not in st.session_state:
+        st.session_state["compat_dnd"] = False  # off by default
 
+    with right:
         if st.session_state["is_admin"]:
-            st.success("Admin mode", icon="🔐")
+            c1, c2, c3 = st.columns([1,1,1])
+            c1.success("Admin", icon="🔐")
+            # Clear cache button so you don't need the 3-dot menu
+            if c2.button("Clear cache", key="btn_clear_cache"):
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                try:
+                    clear_caches()
+                except Exception:
+                    pass
+                st.success("Cache cleared.")
+                st.rerun()
+
+            # Toggle between on-pitch DnD and compatibility DnD
+            st.session_state["compat_dnd"] = c3.toggle("Compat DnD", value=st.session_state["compat_dnd"], help="Use reliable list-based drag & drop instead of on-pitch DnD")
+
             if st.button("Logout", key="btn_logout"):
                 st.session_state["is_admin"] = False
                 st.rerun()
@@ -650,6 +737,7 @@ def header():
                         st.rerun()
                     else:
                         st.error("Invalid password")
+
 
 # ---------------------------------
 # Matches Page
@@ -820,44 +908,54 @@ def page_matches():
                         clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
 
         # On-pitch Drag & Drop editor first; fallback to list-DnD; then manual
-        with st.expander("🧲 Drag & drop lineup (on-pitch)", expanded=False):
-            s = service()
-            if not s:
-                st.info("Login as admin.")
-            else:
-                updates = []
-                colA, colB = st.columns(2)
-                with colA:
-                    st.markdown(f"**{m['team_a']}**")
-                    if _PITCH_DND_AVAILABLE:
-                        upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref=f"A", mid=mid)
-                    elif _LIST_DND_AVAILABLE:
-                        st.caption("On-pitch DnD unavailable. Using list-based DnD.")
-                        upd_a = dnd_list_editor(a_rows, fa, keypref="dndA", mid=mid)
-                    else:
-                        st.info("Install `streamlit-elements` or `streamlit-sortables` for DnD. Use Goals/Assists editor above meanwhile.")
-                        upd_a = None
-                    if upd_a: updates.extend(upd_a)
-                with colB:
-                    st.markdown(f"**{m['team_b']}**")
-                    if _PITCH_DND_AVAILABLE:
-                        upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref=f"B", mid=mid)
-                    elif _LIST_DND_AVAILABLE:
-                        st.caption("On-pitch DnD unavailable. Using list-based DnD.")
-                        upd_b = dnd_list_editor(b_rows, fb, keypref="dndB", mid=mid)
-                    else:
-                        upd_b = None
-                    if upd_b: updates.extend(upd_b)
+      with st.expander("🧲 Drag & drop lineup", expanded=False):
+    s = service()
+    if not s:
+        st.info("Login as admin.")
+    else:
+        updates = []
+        colA, colB = st.columns(2)
+        use_compat = st.session_state.get("compat_dnd", False)
 
-                if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
-                    try:
-                        CHUNK = 20
-                        for i in range(0, len(updates), CHUNK):
-                            s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
-                        clear_caches()
-                        st.success("Positions saved."); st.rerun()
-                    except Exception as e:
-                        st.error(f"Save failed: {e}")
+        # A side
+        with colA:
+            st.markdown(f"**{m['team_a']}**")
+            upd_a = None
+            if not use_compat and _PITCH_DND_AVAILABLE:
+                try:
+                    upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
+                except Exception as e:
+                    st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
+                    st.session_state["compat_dnd"] = True
+                    upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
+            else:
+                upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
+            if upd_a: updates.extend(upd_a)
+
+        # B side
+        with colB:
+            st.markdown(f"**{m['team_b']}**")
+            upd_b = None
+            if not use_compat and _PITCH_DND_AVAILABLE:
+                try:
+                    upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
+                except Exception as e:
+                    st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
+                    st.session_state["compat_dnd"] = True
+                    upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
+            else:
+                upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
+            if upd_b: updates.extend(upd_b)
+
+        if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
+            try:
+                CHUNK = 20
+                for i in range(0, len(updates), CHUNK):
+                    s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
+                clear_caches()
+                st.success("Positions saved."); st.rerun()
+            except Exception as e:
+                st.error(f"Save failed: {e}")
 
 # ---------------------------------
 # Player Manager (Add/Edit + Photo upload)
