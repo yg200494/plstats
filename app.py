@@ -783,10 +783,42 @@ def page_matches():
     with rcol:
         st.markdown(f"### **{m['team_b']}**")
 
-    # ---- admin formation picker (separate helper to avoid indentation issues)
-    render_admin_formations(m, mid, key_prefix=k)
+    # ---- admin formation picker (keys are unique; indentation is 4 spaces)
+    if st.session_state.get("is_admin"):
+        presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
+        presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
 
-    # ---- render combined pitch (side-oriented & compact) with 5s/7s guard
+        side_count = int(m.get("side_count") or 5)
+        options = presets7 if side_count == 7 else presets5
+
+        colf1, colf2, colf3 = st.columns([2, 2, 1])
+        fa = colf1.selectbox(
+            "Formation (Non-bibs)",
+            options,
+            index=(options.index(m.get("formation_a")) if m.get("formation_a") in options else 0),
+            key=f"{k}_fa_{mid}",
+        )
+        fb = colf2.selectbox(
+            "Formation (Bibs)",
+            options,
+            index=(options.index(m.get("formation_b")) if m.get("formation_b") in options else 0),
+            key=f"{k}_fb_{mid}",
+        )
+        if colf3.button("Save formations", key=f"{k}_save_forms_{mid}"):
+            s = service()
+            if not s:
+                st.error("Admin required.")
+            else:
+                fa_s = validate_formation(fa, side_count)
+                fb_s = validate_formation(fb, side_count)
+                s.table("matches").update(
+                    {"formation_a": fa_s, "formation_b": fb_s}
+                ).eq("id", mid).execute()
+                clear_caches()
+                st.success("Formations updated.")
+                st.rerun()
+
+    # ---- render combined pitch (side-oriented & compact and 5s/7s-safe)
     side_count = int(m.get("side_count") or 5)
     fa_render = validate_formation(m.get("formation_a"), side_count)
     fb_render = validate_formation(m.get("formation_b"), side_count)
@@ -796,31 +828,11 @@ def page_matches():
         a_rows, b_rows, fa_render, fb_render, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
     )
 
-    # ---- optional: lineup editor below (unchanged)
+    # ---- (optional) lineup editor expander below
     # if st.session_state.get("is_admin"):
     #     with st.expander("🧲 Arrange lineup", expanded=False):
     #         upd_a = tap_pitch_editor(a_rows, fa_render, m["team_a"], keypref=f"A_{mid}", mid=mid)
     #         upd_b = tap_pitch_editor(b_rows, fb_render, m["team_b"], keypref=f"B_{mid}", mid=mid)
-
-    # ---- (optional) lineup editor expander stays below, if you have one:
-    # if st.session_state.get("is_admin"):
-    #     with st.expander("🧲 Arrange lineup", expanded=False):
-    #         upd_a = tap_pitch_editor(a_rows, fa_render, m["team_a"], keypref=f"A_{mid}", mid=mid)
-    #         upd_b = tap_pitch_editor(b_rows, fb_render, m["team_b"], keypref=f"B_{mid}", mid=mid)
-
-
-    # read-only pitches
-      # formations (admin picker stays the same above)
-    # Ensure formations match side_count (5s vs 7s) even if DB has older values
-  # --- enforce valid formation by side_count and render combined pitch ---
-side_count = int(m.get("side_count") or 5)
-fa = validate_formation(m.get("formation_a"), side_count)
-fb = validate_formation(m.get("formation_b"), side_count)
-
-st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
-render_match_pitch_combined(
-    a_rows, b_rows, fa, fb, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
-)
 
 
 
