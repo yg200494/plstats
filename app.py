@@ -806,10 +806,15 @@ def fixtures_admin_table():
                 clear_caches(); st.success("Updated."); st.rerun()
 
 def page_matches():
-    players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups()
+    # --- Data ---
+    players = fetch_players()
+    matches = fetch_matches()
+    lineups = fetch_lineups()
     lfact, _ = build_fact(players, matches, lineups)
 
     st.subheader("Matches")
+
+    # --- Admin tools: add & edit fixtures ---
     if st.session_state.get("is_admin"):
         with st.expander("Admin: Add / Update Match", expanded=False):
             add_match_wizard()
@@ -817,17 +822,23 @@ def page_matches():
             fixtures_admin_table()
 
     if matches.empty:
-        st.info("No matches yet."); return
+        st.info("No matches yet.")
+        return
 
+    # --- Match picker ---
     seasons = sorted(matches["season"].dropna().unique().tolist())
-    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0, key="m_season")
-    opts = matches[matches["season"]==sel_season].sort_values("gw")
-    labels = opts.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}", axis=1).tolist()
+    sel_season = st.selectbox("Season", seasons, index=len(seasons) - 1 if seasons else 0, key="m_season")
+    opts = matches[matches["season"] == sel_season].sort_values("gw")
+    labels = opts.apply(
+        lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}",
+        axis=1,
+    ).tolist()
     id_map = {labels[i]: str(opts.iloc[i]["id"]) for i in range(len(opts))}
     sel_label = st.selectbox("Match", labels, key="m_label")
     mid = id_map[sel_label]
 
-    m = matches[matches["id"].astype(str)==mid].iloc[0]
+    # --- Selected match & formations ---
+    m = matches[matches["id"].astype(str) == mid].iloc[0]
     show_photos = st.toggle("Show photos", True, key=f"sp_{mid}")
 
     st.markdown(
@@ -835,33 +846,51 @@ def page_matches():
         f"<div><div class='pl-title'>Season {int(m['season'])} · GW {int(m['gw'])}</div>"
         f"<div class='pl-sub'>{m.get('date') or ''}</div></div>"
         f"<div class='pl-title'>{m['team_a']} {int(m.get('score_a') or 0)} – {int(m.get('score_b') or 0)} {m['team_b']}</div>"
-        f"</div>", unsafe_allow_html=True
+        f"</div>",
+        unsafe_allow_html=True,
     )
     if m.get("motm_name"):
-        st.markdown(f"<div class='pl-banner slim'><span>Man of the Match</span><span class='pl-badge'>🏅 {m['motm_name']}</span></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='pl-banner slim'><span>Man of the Match</span><span class='pl-badge'>🏅 {m['motm_name']}</span></div>",
+            unsafe_allow_html=True,
+        )
 
-    g = lfact[lfact["match_id"]==mid]
-    a_rows = g[g["team"]==m["team_a"]].copy()
-    b_rows = g[g["team"]==m["team_b"]].copy()
+    g = lfact[lfact["match_id"] == mid]
+    a_rows = g[g["team"] == m["team_a"]].copy()
+    b_rows = g[g["team"] == m["team_b"]].copy()
 
-    # Formations (admin can change)
+    # --- Admin can change formations ---
     if st.session_state.get("is_admin"):
-        presets5 = ["1-2-1","1-3","2-2","3-1"]; presets7 = ["2-1-2-1","3-2-1","2-3-1"]
-        preset_list = presets7 if int(m.get("side_count") or 5)==7 else presets5
-        colf1, colf2, colf3 = st.columns([2,2,1])
-        fa = colf1.selectbox("Formation (Non-bibs)", preset_list, index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0), key=f"view_fa_{mid}")
-        fb = colf2.selectbox("Formation (Bibs)", preset_list, index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0), key=f"view_fb_{mid}")
+        presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
+        presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
+        preset_list = presets7 if int(m.get("side_count") or 5) == 7 else presets5
+        colf1, colf2, colf3 = st.columns([2, 2, 1])
+        fa = colf1.selectbox(
+            "Formation (Non-bibs)",
+            preset_list,
+            index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0),
+            key=f"view_fa_{mid}",
+        )
+        fb = colf2.selectbox(
+            "Formation (Bibs)",
+            preset_list,
+            index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
+            key=f"view_fb_{mid}",
+        )
         if colf3.button("Save formations", key=f"save_forms_{mid}"):
             s = service()
-            if not s: st.error("Admin required.")
+            if not s:
+                st.error("Admin required.")
             else:
                 s.table("matches").update({"formation_a": fa, "formation_b": fb}).eq("id", mid).execute()
-                clear_caches(); st.success("Formations updated."); st.rerun()
+                clear_caches()
+                st.success("Formations updated.")
+                st.rerun()
     else:
-        fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
-        fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
+        fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5) == 7 else "1-2-1")
+        fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5) == 7 else "1-2-1")
 
-    # Summary pitches (pretty, read-only)
+    # --- Read-only summary pitches ---
     c1, c2 = st.columns(2)
     with c1:
         st.caption(m["team_a"])
@@ -870,7 +899,7 @@ def page_matches():
         st.caption(m["team_b"])
         render_pitch(b_rows, fb, m.get("motm_name"), m["team_b"], show_stats=True, show_photos=show_photos)
 
-    # Inline G/A + MOTM editor (admin)
+    # --- G/A + MOTM editor (admin) ---
     if st.session_state.get("is_admin"):
         with st.expander("📊 Goals / Assists & MOTM", expanded=False):
             s = service()
@@ -879,83 +908,95 @@ def page_matches():
             else:
                 all_names = g["name"].dropna().astype(str).unique().tolist()
                 default_idx = all_names.index(m.get("motm_name")) if m.get("motm_name") in all_names else (0 if all_names else None)
-                colm1, colm2 = st.columns([3,1])
+                colm1, colm2 = st.columns([3, 1])
                 with colm1:
-                    motm_pick = st.selectbox("Man of the Match", all_names if all_names else [""], index=(default_idx if default_idx is not None else 0), key=f"motm_{mid}")
+                    motm_pick = st.selectbox(
+                        "Man of the Match", all_names if all_names else [""], index=(default_idx if default_idx is not None else 0), key=f"motm_{mid}"
+                    )
                 with colm2:
                     if st.button("Save MOTM", key=f"motm_save_{mid}"):
                         s.table("matches").update({"motm_name": motm_pick or None}).eq("id", mid).execute()
-                        clear_caches(); st.success("MOTM saved."); st.rerun()
+                        clear_caches()
+                        st.success("MOTM saved.")
+                        st.rerun()
 
                 st.markdown("#### Non-bibs")
                 for _, r in a_rows.sort_values("name").iterrows():
-                    c1_,c2_,c3_,c4_ = st.columns([3,1,1,1])
+                    c1_, c2_, c3_, c4_ = st.columns([3, 1, 1, 1])
                     c1_.write(r["name"])
                     g_in = int(c2_.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
                     a_in = int(c3_.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
                     if c4_.button("Save", key=f"save_{r['id']}"):
                         s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
-                        clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
+                        clear_caches()
+                        st.success(f"Saved {r['name']}")
+                        st.rerun()
 
                 st.markdown("#### Bibs")
                 for _, r in b_rows.sort_values("name").iterrows():
-                    c1_,c2_,c3_,c4_ = st.columns([3,1,1,1])
+                    c1_, c2_, c3_, c4_ = st.columns([3, 1, 1, 1])
                     c1_.write(r["name"])
                     g_in = int(c2_.number_input("⚽", min_value=0, value=int(r.get("goals") or 0), key=f"ga_{r['id']}"))
                     a_in = int(c3_.number_input("🅰️", min_value=0, value=int(r.get("assists") or 0), key=f"as_{r['id']}"))
                     if c4_.button("Save", key=f"save_{r['id']}"):
                         s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
-                        clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
+                        clear_caches()
+                        st.success(f"Saved {r['name']}")
+                        st.rerun()
 
-        # On-pitch Drag & Drop editor first; fallback to list-DnD; then manual
-      with st.expander("🧲 Drag & drop lineup", expanded=False):
-    s = service()
-    if not s:
-        st.info("Login as admin.")
-    else:
-        updates = []
-        colA, colB = st.columns(2)
-        use_compat = st.session_state.get("compat_dnd", False)
+    # --- Drag & drop lineup (robust, auto-fallback) ---
+    with st.expander("🧲 Drag & drop lineup", expanded=False):
+        s = service()
+        if not s:
+            st.info("Login as admin.")
+        else:
+            updates = []
+            colA, colB = st.columns(2)
+            use_compat = bool(st.session_state.get("compat_dnd", False))
 
-        # A side
-        with colA:
-            st.markdown(f"**{m['team_a']}**")
-            upd_a = None
-            if not use_compat and _PITCH_DND_AVAILABLE:
-                try:
-                    upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
-                except Exception as e:
-                    st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
-                    st.session_state["compat_dnd"] = True
+            # A side
+            with colA:
+                st.markdown(f"**{m['team_a']}**")
+                upd_a = None
+                if (not use_compat) and _PITCH_DND_AVAILABLE:
+                    try:
+                        upd_a = dnd_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
+                    except Exception:
+                        st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
+                        st.session_state["compat_dnd"] = True
+                        upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
+                else:
                     upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
-            else:
-                upd_a = dnd_list_editor_compat(a_rows, fa, keypref="A", mid=mid)
-            if upd_a: updates.extend(upd_a)
+                if upd_a:
+                    updates.extend(upd_a)
 
-        # B side
-        with colB:
-            st.markdown(f"**{m['team_b']}**")
-            upd_b = None
-            if not use_compat and _PITCH_DND_AVAILABLE:
-                try:
-                    upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
-                except Exception as e:
-                    st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
-                    st.session_state["compat_dnd"] = True
+            # B side
+            with colB:
+                st.markdown(f"**{m['team_b']}**")
+                upd_b = None
+                if (not use_compat) and _PITCH_DND_AVAILABLE:
+                    try:
+                        upd_b = dnd_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
+                    except Exception:
+                        st.warning("On-pitch DnD unavailable here. Switched to compatibility editor.")
+                        st.session_state["compat_dnd"] = True
+                        upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
+                else:
                     upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
-            else:
-                upd_b = dnd_list_editor_compat(b_rows, fb, keypref="B", mid=mid)
-            if upd_b: updates.extend(upd_b)
+                if upd_b:
+                    updates.extend(upd_b)
 
-        if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
-            try:
-                CHUNK = 20
-                for i in range(0, len(updates), CHUNK):
-                    s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
-                clear_caches()
-                st.success("Positions saved."); st.rerun()
-            except Exception as e:
-                st.error(f"Save failed: {e}")
+            if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
+                try:
+                    CHUNK = 20
+                    for i in range(0, len(updates), CHUNK):
+                        s.table("lineups").upsert(updates[i:i + CHUNK], on_conflict="id").execute()
+                    clear_caches()
+                    st.success("Positions saved.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+
 
 # ---------------------------------
 # Player Manager (Add/Edit + Photo upload)
