@@ -112,8 +112,8 @@ def formation_to_lines(form: str | None) -> List[int]:
 def _to_int(s):
     return pd.to_numeric(s, errors="coerce")
 
-def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Join lineup rows with match metadata; derive results, team goals, per-row info."""
+def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Join lineup rows with match metadata; unify season/gw columns; derive results."""
     if matches.empty or lineups.empty:
         return pd.DataFrame(columns=[
             "match_id","season","gw","date","team","team_a","team_b",
@@ -121,23 +121,54 @@ def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFra
             "player_id","player_name","name","photo","goals","assists","ga","result",
             "team_goals","opp_goals","is_gk","line","slot"
         ]), matches
-    m = matches.copy(); l = lineups.copy(); p = players.copy()
 
-    # normalize ids/types
+    m = matches.copy()
+    l = lineups.copy()
+    p = players.copy()
+
+    # types
     for c in ["season","gw","score_a","score_b","side_count"]:
-        if c in m.columns: m[c] = _to_int(m[c])
-    for c in ["goals","assists","line","slot"]:
-        if c in l.columns: l[c] = _to_int(l[c])
+        if c in m.columns:
+            m[c] = _to_int(m[c])
+    for c in ["season","gw","goals","assists","line","slot"]:
+        if c in l.columns:
+            l[c] = _to_int(l[c])
 
-    # join match metadata
     keep = ["id","season","gw","date","team_a","team_b","score_a","score_b","is_draw","motm_name","formation_a","formation_b"]
-    j = l.merge(m[keep].rename(columns={"id":"match_id"}), on="match_id", how="left")
+    # IMPORTANT: add suffixes so we can unify season/gw deterministically
+    j = l.merge(
+        m[keep].rename(columns={"id":"match_id"}),
+        on="match_id",
+        how="left",
+        suffixes=("_lu","_ma")
+    )
+
+    # Unify season/gw into plain columns (prefer lineup values, fall back to match)
+    def pick(a, b):
+        if a is None and b is None:
+            return pd.Series(dtype="float64")
+        a = _to_int(a) if a is not None else None
+        b = _to_int(b) if b is not None else None
+        if a is None:  return b
+        if b is None:  return a
+        return a.where(a.notna(), b)
+
+    j["season"] = pick(j.get("season_lu"), j.get("season_ma"))
+    j["gw"]     = pick(j.get("gw_lu"),     j.get("gw_ma"))
+
+    # clean suffix columns if present
+    for c in ["season_lu","season_ma","gw_lu","gw_ma"]:
+        if c in j.columns:
+            j.drop(columns=c, inplace=True)
 
     # player name/photo
     if not p.empty:
         pp = p.rename(columns={"id":"player_id"}).copy()
         j = j.merge(pp[["player_id","name","photo_url"]], on="player_id", how="left")
-        j["name"] = j["player_name"].where(j["player_name"].notna() & (j["player_name"].astype(str).str.strip()!=""), j["name"])
+        j["name"] = j["player_name"].where(
+            j["player_name"].notna() & (j["player_name"].astype(str).str.strip()!=""),
+            j["name"]
+        )
         j["photo"] = j["photo_url"]
     else:
         j["name"] = j["player_name"]
@@ -154,6 +185,7 @@ def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFra
     j["is_gk"] = j.get("is_gk", False).astype(bool)
 
     return j, matches
+
 
 def df_filter_by(df: pd.DataFrame, season: Optional[int], last_gw: int) -> pd.DataFrame:
     d = df.copy()
@@ -316,9 +348,15 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
     max_slots = max(parts+[1])
     total_rows = len(parts)+1  # + GK row
 
-    def y_for(i):
-        # space rows evenly from top box to bottom box
-        return 6 + (88 * (i/(total_rows-1))) if total_rows>1 else 50
+    # Add larger vertical padding so top/bottom rows (ST / GK) don't hit the borders
+    TOP_PAD = 14   # percent
+    BOT_PAD = 14   # percent
+
+    def y_for(i: int) -> float:
+        if total_rows <= 1:
+            return 50.0
+        usable = 100.0 - TOP_PAD - BOT_PAD
+        return TOP_PAD + usable * (i / (total_rows - 1))
 
     html = [f"<div class='pl-pitch'>{_pitch_svg()}"]
     for _, r in rows.iterrows():
@@ -328,7 +366,6 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
         offset_row = 0 if is_gk else (max_slots - slots_row)//2
         abs_slot = int(r.get("slot") if pd.notna(r.get("slot")) else (max_slots//2 if is_gk else offset_row))
         rel_slot = max(0, min(abs_slot - offset_row, slots_row-1))
-        # even X within this row
         x = (100.0 * (rel_slot + 1) / (slots_row + 1))
         y = y_for(row_idx)
 
@@ -352,6 +389,7 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
         )
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+
 
 # -----------------------------
 # Admin/auth header
