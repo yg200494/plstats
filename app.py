@@ -254,72 +254,107 @@ def header():
                         st.error("Invalid password")
 
 # ---------- Pitch (no overlap) ----------
-def stat_pill(goals:int, assists:int)->str:
+def stat_pill(goals: int, assists: int) -> str:
+    """Compact GA chip, larger & readable."""
     parts = []
-    if goals>0:  parts.append(f"{icon_svg('ball')}<span>{goals}</span>")
-    if assists>0:parts.append(f"{icon_svg('assist')}<span>{assists}</span>")
-    if not parts: return ""
-    return f"<span class='p-pill'>{'&nbsp;&nbsp;'.join(parts)}</span>"
+    if goals and goals > 0:
+        parts.append(f"{icon_svg('ball',16)}<strong>{int(goals)}</strong>")
+    if assists and assists > 0:
+        parts.append(f"{icon_svg('assist',16)}<strong>{int(assists)}</strong>")
+    if not parts:
+        return ""
+    return f"<span class='p-pill' style='font-size:.9rem'>{'&nbsp;&nbsp;'.join(parts)}</span>"
 
-def slot_html(x_pct:float, y_pct:float, name:str, motm:bool=False, pill:str="")->str:
+def slot_html(x_pct: float, y_pct: float, name: str, motm: bool=False, pill: str = "") -> str:
+    """Player bubble + name + pill at fixed vertical stack."""
     bubble_cls = "p-bubble motm" if motm else "p-bubble"
     init = initials(name)
     return (
-      f"<div class='p-slot' style='left:{x_pct}%; top:{y_pct}%'>"
-      f"  <div class='{bubble_cls}'><span class='p-init'>{init}</span></div>"
-      f"  <div class='p-name'>{name}</div>"
-      f"  {pill}"
-      f"</div>"
+        f"<div class='p-slot' style='left:{x_pct}%;top:{y_pct}%;'>"
+        f"  <div class='{bubble_cls}'><span class='p-init'>{init}</span></div>"
+        f"  <div class='p-name'>{name}</div>"
+        f"  {pill}"
+        f"</div>"
     )
 
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
-                 show_stats: bool=True, show_photos: bool=True):
-    ensure_pitch_css()  # <--- ADD THIS LINE
+                 show_stats: bool = True, show_photos: bool = True):
+    """
+    Self-contained FotMob-style pitch:
+    - Injects minimal CSS inline so it never breaks even if external CSS fails.
+    - Uses _ensure_positions(...) so line/slot are always valid.
+    """
+    # Minimal inline CSS (scoped to this block only)
+    pitch_css = """
+    <style>
+    .pitch{position:relative;width:100%;padding-top:150%;
+      background: radial-gradient(1200px 800px at 50% -20%, #162417 0%, #0e1711 45%, #0b120d 100%);
+      border-radius:20px;border:1px solid #1b3b2d;overflow:hidden}
+    .pitch-inner{position:absolute;inset:10px;border-radius:16px}
+    .pitch-line{position:absolute;left:6%;right:6%;border-top:1px solid rgba(255,255,255,.06)}
+    .p-slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.3rem}
+    .p-bubble{width:64px;height:64px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+      background:#0c2017;border:2px solid #274a3a;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+    .p-bubble.motm{border-color:#D4AF37;box-shadow:0 0 0 2px rgba(212,175,55,.25),0 6px 18px rgba(212,175,55,.2)}
+    .p-init{font-weight:800;letter-spacing:.3px;color:#dff7ec;font-size:1rem}
+    .p-name{font-size:.95rem;font-weight:800;color:#E6EBF1;text-shadow:0 1px 0 rgba(0,0,0,.6)}
+    .p-pill{display:inline-flex;align-items:center;gap:.4rem;padding:.22rem .55rem;
+      background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-radius:999px}
+    .p-ico{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px}
+    </style>
+    """
+
+    # Sanitize positions & compute layout
     rows = _ensure_positions(rows, formation)
     parts = formation_to_lines(formation)
-    ...
+    if not parts:
+        parts = [1, 2, 1]
 
     # layout constants
     top_margin = 12
     bottom_margin = 10
     inner_h = 100 - top_margin - bottom_margin
-    n_lines = len(parts)
+    n_lines = max(1, len(parts))
+    max_slots = max(parts + [1])
 
-    html = ["<div class='pitch'><div class='pitch-inner'>"]
+    # Build HTML
+    html = [pitch_css, "<div class='pitch'><div class='pitch-inner'>"]
+
     # guide lines
-    for i in range(n_lines+1):
-        y = top_margin + (inner_h/(n_lines+1))*(i+0.5)
-        html.append(f"<div class='pitch-line' style='top:{y}%; opacity:.25'></div>")
+    for i in range(n_lines + 1):
+        y = top_margin + (inner_h / (n_lines + 1)) * (i + 0.5)
+        html.append(f"<div class='pitch-line' style='top:{y}%;opacity:.25'></div>")
 
-    # GK at top center
-    gk = rows[(rows.get("is_gk")==True)] if "is_gk" in rows.columns else pd.DataFrame()
+    # GK at top center (if any)
+    gk = rows[rows.get("is_gk") == True] if "is_gk" in rows.columns else pd.DataFrame()
     if not gk.empty:
         r = gk.iloc[0]
         nm = str(r.get("name") or r.get("player_name") or "")
         y = top_margin * 0.45
         x = 50
         pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
-        html.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill))
+        html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill))
 
-    # Outfield
-    max_slots = max(parts+[1])
+    # Outfield rows
     for line_idx, slots in enumerate(parts):
-        y = top_margin + inner_h * ((line_idx + 0.5)/n_lines)
+        y = top_margin + inner_h * ((line_idx + 0.5) / n_lines)
         x_gap = 100 / (slots + 1)
-        line_df = rows[(rows.get("is_gk")!=True) & (rows.get("line")==line_idx)]
+        line_df = rows[(rows.get("is_gk") != True) & (rows.get("line") == line_idx)]
         for j in range(slots):
-            x = (j+1)*x_gap
-            abs_offset = (max_slots - slots)//2
+            x = (j + 1) * x_gap
+            abs_offset = (max_slots - slots) // 2
             abs_slot = abs_offset + j
-            p = line_df[line_df.get("slot")==abs_slot].head(1)
-            if len(p)==0: continue
+            p = line_df[line_df.get("slot") == abs_slot].head(1)
+            if len(p) == 0:
+                continue
             r = p.iloc[0]
             nm = str(r.get("name") or r.get("player_name") or "")
             pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
-            html.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill))
+            html.append(slot_html(x, y, nm, motm=(motm_name == nm), pill=pill))
 
     html.append("</div></div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+
 
 # ---------- Tap-to-place editor (stable, no rerun thrash) ----------
 def tap_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
