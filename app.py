@@ -609,6 +609,7 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
         parts = [1,2,1] if outfield_needed == 4 else [2,1,2,1]
         formation = "-".join(map(str, parts))
 
+    # Session keys
     sk_assign = f"{keypref}_assign"
     sk_gk = f"{keypref}_gk"
     sk_ga = f"{keypref}_ga"
@@ -622,7 +623,8 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
         gk = None
         for _, r in ld.iterrows():
             nm = str(r.get("name") or r.get("player_name") or "").strip()
-            if not nm: continue
+            if not nm: 
+                continue
             if bool(r.get("is_gk")):
                 gk = nm
             else:
@@ -646,27 +648,34 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
     gk_name: Optional[str] = st.session_state.get(sk_gk)
     selected: Optional[str] = st.session_state.get(sk_sel)
 
-    assigned_names = set(assign.values())
-    bench = [n for n in pool if n not in assigned_names and n != gk_name]
-
-    cTop = st.container()
+    # Layout: pitch left, controls right
     cPitch, cSide = st.columns([3, 2])
 
+    # ----- Controls (right) — no nested columns here -----
     with cSide:
         st.markdown(f"**{team_name} — Bench / Select**")
+
+        # Build pick list (bench + already-assigned so you can re-place)
+        assigned_names = set(assign.values())
+        bench = [n for n in pool if n not in assigned_names and n != gk_name]
+
         q = st.text_input("Search", key=f"{keypref}_q")
-        show_bench = [n for n in bench if (not q or q.lower() in n.lower())]
-        st.caption("Tap a name to select, then tap the pitch")
-        cols = st.columns(3)
-        i = 0
-        for nm in (show_bench + sorted(list(assigned_names))):
-            if q and nm not in show_bench and q.lower() not in nm.lower():
-                continue
-            with cols[i%3]:
-                if st.button(("✓ " if selected==nm else "") + nm, key=f"{keypref}_pick_{nm}"):
-                    st.session_state[sk_sel] = nm; st.rerun()
-            i += 1
+        filtered_bench = [n for n in bench if (not q or q.lower() in n.lower())]
+        filtered_assigned = [n for n in sorted(assigned_names) if (not q or q.lower() in n.lower())]
+        pickable = filtered_bench + filtered_assigned
+
+        default_idx = 0
+        if selected in pickable:
+            default_idx = pickable.index(selected) + 1  # because we prepend "—"
+
+        sel = st.selectbox("Select player to place", ["—"] + pickable, index=default_idx, key=f"{keypref}_pick_sel")
+        if sel == "—":
+            st.session_state[sk_sel] = None
+        else:
+            st.session_state[sk_sel] = sel
+
         st.markdown("---")
+
         # GK controls
         st.caption("Goalkeeper")
         gk_opts = ["—"] + pool
@@ -676,9 +685,8 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
             st.session_state[sk_gk] = None if new_gk == "—" else new_gk
             st.rerun()
 
-        # Auto-pick & Reset & Save
-        colB1, colB2, colB3 = st.columns(3)
-        if colB1.button("↺ Reset", key=f"{keypref}_reset"):
+        # Actions (stacked to avoid nested columns)
+        if st.button("↺ Reset", key=f"{keypref}_reset"):
             _from_db(); st.rerun()
 
         def _auto_pick():
@@ -713,12 +721,13 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
             st.session_state[sk_gk] = new_gk
             st.session_state[sk_sel] = None
 
-        if colB2.button("✨ Auto-Pick", key=f"{keypref}_autopick"):
+        if st.button("✨ Auto-Pick", key=f"{keypref}_autopick"):
             _auto_pick(); st.rerun()
 
         s = service()
-        if colB3.button("💾 Save lineup", key=f"{keypref}_save"):
-            if not s: st.error("Admin required.")
+        if st.button("💾 Save lineup", key=f"{keypref}_save"):
+            if not s: 
+                st.error("Admin required.")
             else:
                 s.table("lineups").delete().eq("match_id", mid).eq("team", team_name).execute()
                 rows = []
@@ -741,7 +750,7 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
                         s.table("lineups").insert(rows[i:i+500]).execute()
                 clear_caches(); st.success("Saved."); st.rerun()
 
-    # Pitch canvas (tap target)
+    # ----- Pitch canvas (tap target) -----
     with cPitch:
         canvas_w = 360 if st.session_state.get("compact") else 720
         canvas_h = int(canvas_w * 0.58)
@@ -756,8 +765,9 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
             key=f"canvas_{keypref}"
         )
 
-        # Handle clicks
-        if canvas_res.json_data is not None and selected:
+        # Handle taps: snap to nearest slot
+        if canvas_res.json_data is not None and st.session_state.get(sk_sel):
+            nm = st.session_state[sk_sel]
             objs = canvas_res.json_data.get("objects", [])
             prev = int(st.session_state.get(sk_clicks, 0))
             if len(objs) > prev:
@@ -771,36 +781,34 @@ def click_lineup_editor(team_name: str, mid: str, side_count: int, formation: st
                     d = (cx - x_pct)**2 + (cy - y_pct)**2
                     if d < best_d:
                         best_d = d; best = (ln, sl)
-                if best is not None:
-                    old = None
-                    for k, v in list(assign.items()):
-                        if v == selected: old = k
-                    if old: del assign[old]
-                    if best in assign and assign[best] != selected and old:
-                        assign[old] = assign[best]
-                    assign[best] = selected
-                    st.session_state[sk_assign] = assign
-                    st.session_state[sk_clicks] = len(objs)
-                    st.rerun()
+                # Move/swap
+                assign = dict(st.session_state[sk_assign])
+                old = next((k for k,v in assign.items() if v == nm), None)
+                if old: del assign[old]
+                if best in assign and assign[best] != nm and old:
+                    assign[old] = assign[best]
+                assign[best] = nm
+                st.session_state[sk_assign] = assign
+                st.session_state[sk_clicks] = len(objs)
+                st.rerun()
 
-    # Inline G/A per assigned slot
-    with cTop:
-        if assign:
-            st.caption(f"{team_name} — goals & assists per slot")
-            for ln, count in enumerate(parts):
-                cols = st.columns(count)
-                for sl in range(count):
-                    nm = assign.get((ln,sl))
-                    with cols[sl]:
-                        if nm:
-                            st.markdown(f"**{nm}**")
-                            g0,a0 = ga.get((ln,sl), (0,0))
-                            g = st.number_input("G", 0, 50, int(g0), key=f"{keypref}_g_{ln}_{sl}")
-                            a = st.number_input("A", 0, 50, int(a0), key=f"{keypref}_a_{ln}_{sl}")
-                            ga[(ln,sl)] = (int(g), int(a))
-                        else:
-                            st.write("—")
-            st.session_state[sk_ga] = ga
+    # ----- Inline G/A per slot (above, outside right column layout) -----
+    if st.session_state.get(sk_assign):
+        st.caption(f"{team_name} — goals & assists per slot")
+        for ln, count in enumerate(parts):
+            cols_row = st.columns(count)
+            for sl in range(count):
+                nm = st.session_state[sk_assign].get((ln,sl))
+                with cols_row[sl]:
+                    if nm:
+                        st.markdown(f"**{nm}**")
+                        g0,a0 = st.session_state.get(sk_ga, {}).get((ln,sl), (0,0))
+                        g = st.number_input("G", 0, 50, int(g0), key=f"{keypref}_g_{ln}_{sl}")
+                        a = st.number_input("A", 0, 50, int(a0), key=f"{keypref}_a_{ln}_{sl}")
+                        st.session_state[sk_ga][(ln,sl)] = (int(g), int(a))
+                    else:
+                        st.write("—")
+
 
 # ------------------------------
 # Add Match
