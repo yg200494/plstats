@@ -768,7 +768,7 @@ def page_matches():
         fb = colf2.selectbox("Formation (Bibs)", preset_list,
                              index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
                              key=f"view_fb_{mid}")
-      if colf3.button("Save formations", key=f"save_forms_{mid}"):
+    if colf3.button("Save formations", key=f"save_forms_{mid}"):
     s = service()
     if not s:
         st.error("Admin required.")
