@@ -742,19 +742,35 @@ def page_stats():
         return
 
     st.markdown("### Stats")
-    seasons = [-1] + sorted(lfact["season"].dropna().astype(int).unique().tolist())
+
+    # Seasons list (always strings for formatting)
+    seasons_unique = sorted(lfact["season"].dropna().astype(int).unique().tolist())
+    seasons = [-1] + seasons_unique
+    # pick last item (latest season) or "All" when only [-1]
+    default_index = max(0, len(seasons) - 1)
+
     c1,c2,c3,c4 = st.columns(4)
-    sel_season = c1.selectbox("Season (or All)", seasons, format_func=lambda x: ("All" if x==-1 else x), index=len(seasons)-1, key="st_season")
+    sel_season = c1.selectbox(
+        "Season (or All)",
+        seasons,
+        index=default_index,
+        format_func=lambda x: "All" if x == -1 else str(x),
+        key="st_season",
+    )
     min_games = c2.number_input("Min games", 0, 100, 1, key="st_min")
     last_gw = c3.number_input("Last N GWs (0 = all)", 0, 200, 0, key="st_last")
     top_n = c4.number_input("Rows", 5, 200, 25, key="st_rows")
 
-    metric = st.selectbox("Metric", [
-        "Top Scorers","Top Assisters","Top G+A","Team Contribution%","MOTM Count","Best Duos","Nemesis"
-    ], key="st_metric")
+    metric = st.selectbox(
+        "Metric",
+        ["Top Scorers","Top Assisters","Top G+A","Team Contribution%","MOTM Count","Best Duos","Nemesis"],
+        key="st_metric"
+    )
+
+    season_filter = None if sel_season == -1 else int(sel_season)
 
     if metric in ["Top Scorers","Top Assisters","Top G+A","Team Contribution%","MOTM Count"]:
-        agg = player_agg(lfact, None if sel_season==-1 else int(sel_season), int(min_games), int(last_gw))
+        agg = player_agg(lfact, season_filter, int(min_games), int(last_gw))
         if agg.empty:
             st.caption("No rows.")
             return
@@ -771,11 +787,13 @@ def page_stats():
             cnt = m["motm_name"].dropna().value_counts().rename_axis("name").reset_index(name="MOTM")
             out = agg.merge(cnt, on="name", how="left").fillna({"MOTM":0}).sort_values(["MOTM","G+A"], ascending=[False,False]).head(int(top_n))
         st.dataframe(out, use_container_width=True, hide_index=True)
+
     elif metric == "Best Duos":
-        out = duos_table(lfact, None if sel_season==-1 else int(sel_season), int(min_games), int(last_gw)).head(int(top_n))
+        out = duos_table(lfact, season_filter, int(min_games), int(last_gw)).head(int(top_n))
         st.dataframe(out, use_container_width=True, hide_index=True)
+
     else:  # Nemesis
-        out = nemesis_table(lfact, None if sel_season==-1 else int(sel_season), int(min_games), int(last_gw)).head(int(top_n))
+        out = nemesis_table(lfact, season_filter, int(min_games), int(last_gw)).head(int(top_n))
         st.dataframe(out, use_container_width=True, hide_index=True)
 
 # -----------------------------------
@@ -822,8 +840,7 @@ def page_players():
     n = st.number_input("Last N games", 1, max(1,gp), min(5,gp), key="pp_last")
     frm = form_string(mine["result"].tolist(), n=n)
 
-    # Best teammate / Nemesis
-    # Best teammate: pair with max Win% (>=1 GP)
+    # Best teammate (within same team)
     same = mine.merge(mine, on=["match_id","team"])
     same = same[same["name_x"] < same["name_y"]]
     best_t = None
@@ -838,6 +855,7 @@ def page_players():
         out = out[(out["name_x"]==sel) | (out["name_y"]==sel)]
         best_t = out[["Mate","GP","W","Win%"]].head(1)
 
+    # Nemesis (opponents) — FIX: reset_index() before column access
     opp = mine.merge(lfact, on="match_id")
     opp = opp[opp["team_x"] != opp["team_y"]]
     nem = None
@@ -849,7 +867,8 @@ def page_players():
         l3 = opp[(opp["result_x"]=="L")].groupby(["name_x","name_y"])["match_id"].nunique().rename("L")
         outn = pd.concat([gp3,w3,d3,l3], axis=1).fillna(0)
         outn["Win%"] = ((outn["W"]/outn["GP"])*100).round(1)
-        outn = outn[outn["name_x"]==sel].sort_values(["Win%","GP"], ascending=[True,False]).reset_index()
+        outn = outn.reset_index()  # <-- important
+        outn = outn[outn["name_x"]==sel].sort_values(["Win%","GP"], ascending=[True,False]).reset_index(drop=True)
         outn = outn.rename(columns={"name_y":"Nemesis"})
         nem = outn[["Nemesis","GP","W","D","L","Win%"]].head(1)
 
@@ -862,6 +881,7 @@ def page_players():
         f"<div style='width:96px;height:96px;border-radius:50%;background:#1a2430;color:#e9eef3;display:flex;align-items:center;justify-content:center;font-weight:800'>{initials(sel)}</div>"
     )
 
+    # Header card
     st.markdown(f"""
     <div class='badge'>
       {av_html}
