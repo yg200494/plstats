@@ -756,30 +756,47 @@ def page_matches():
     a_rows = g[g["team"]==m["team_a"]].copy()
     b_rows = g[g["team"]==m["team_b"]].copy()
 
-    # formations
-    if st.session_state.get("is_admin"):
-        presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
-        presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
-        preset_list = presets7 if int(m.get("side_count") or 5)==7 else presets5
-        colf1, colf2, colf3 = st.columns([2,2,1])
-        fa = colf1.selectbox("Formation (Non-bibs)", preset_list,
-                             index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0),
-                             key=f"view_fa_{mid}")
-        fb = colf2.selectbox("Formation (Bibs)", preset_list,
-                             index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
-                             key=f"view_fb_{mid}")
+   # --- Admin: change formations (picker) ---
+if st.session_state.get("is_admin"):
+    presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
+    presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
+
+    side_count = int(m.get("side_count") or 5)
+    preset_list = presets7 if side_count == 7 else presets5
+
+    colf1, colf2, colf3 = st.columns([2, 2, 1])
+    fa = colf1.selectbox(
+        "Formation (Non-bibs)",
+        preset_list,
+        index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0),
+        key=f"view_fa_{mid}",
+    )
+    fb = colf2.selectbox(
+        "Formation (Bibs)",
+        preset_list,
+        index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
+        key=f"view_fb_{mid}",
+    )
+
     if colf3.button("Save formations", key=f"save_forms_{mid}"):
-    s = service()
-    if not s:
-        st.error("Admin required.")
-    else:
-        side_count = int(m.get("side_count") or 5)
-        fa_s = validate_formation(fa, side_count)
-        fb_s = validate_formation(fb, side_count)
-        s.table("matches").update({"formation_a": fa_s, "formation_b": fb_s}).eq("id", mid).execute()
-        clear_caches()
-        st.success("Formations updated.")
-        st.rerun()
+        s = service()
+        if not s:
+            st.error("Admin required.")
+        else:
+            # validate 5s vs 7s before saving
+            side_count = int(m.get("side_count") or 5)
+            fa_s = validate_formation(fa, side_count)
+            fb_s = validate_formation(fb, side_count)
+
+            s.table("matches").update({
+                "formation_a": fa_s,
+                "formation_b": fb_s
+            }).eq("id", mid).execute()
+
+            clear_caches()
+            st.success("Formations updated.")
+            st.rerun()
+
 
 
     else:
