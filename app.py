@@ -21,14 +21,51 @@ sb = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # ---------- CSS loader ----------
+# ---------- CSS loader with inline fallback ----------
+PITCH_MIN_CSS = """
+<style>
+/* minimal, self-contained styles for the pitch & pills */
+.pitch{position:relative;width:100%;padding-top:150%;
+  background: radial-gradient(1200px 800px at 50% -20%, #162417 0%, #0e1711 45%, #0b120d 100%);
+  border-radius:20px;border:1px solid #1b3b2d;overflow:hidden}
+.pitch-inner{position:absolute;inset:10px;border-radius:16px}
+.pitch-line{position:absolute;left:6%;right:6%;border-top:1px solid rgba(255,255,255,.06)}
+.p-slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.25rem}
+.p-bubble{width:56px;height:56px;border-radius:999px;display:flex;align-items:center;justify-content:center;
+  background:#0c2017;border:2px solid #274a3a;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+.p-bubble.motm{border-color:#D4AF37;box-shadow:0 0 0 2px rgba(212,175,55,.25),0 6px 18px rgba(212,175,55,.2)}
+.p-init{font-weight:800;letter-spacing:.3px;color:#dff7ec}
+.p-name{font-size:.85rem;font-weight:800;color:#E6EBF1;text-shadow:0 1px 0 rgba(0,0,0,.6)}
+.p-pill{display:inline-flex;align-items:center;gap:.35rem;padding:.18rem .5rem;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:999px;font-size:.78rem}
+.p-ico{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px}
+</style>
+"""
+
 def load_css():
+    """Load full theme CSS if available; otherwise inject minimal pitch CSS so layout never breaks."""
+    # Try full theme
     try:
         with open("css/style.css", "r", encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+            st.session_state["__css_theme_loaded__"] = True
+            return
     except Exception:
         pass
+    # Fallback (once per session)
+    if not st.session_state.get("__pitch_css_injected__", False):
+        st.markdown(PITCH_MIN_CSS, unsafe_allow_html=True)
+        st.session_state["__pitch_css_injected__"] = True
 
+def ensure_pitch_css():
+    """Always ensure minimal pitch CSS exists (in case theme CSS wasn’t loaded)."""
+    if not (st.session_state.get("__css_theme_loaded__") or st.session_state.get("__pitch_css_injected__")):
+        st.markdown(PITCH_MIN_CSS, unsafe_allow_html=True)
+        st.session_state["__pitch_css_injected__"] = True
+
+# call once at import
 load_css()
+
 
 # ---------- Helpers: icons / badges (SVG, no emojis) ----------
 def icon_svg(name: str, size: int = 14, color: str = "#E6EBF1") -> str:
@@ -237,7 +274,8 @@ def slot_html(x_pct:float, y_pct:float, name:str, motm:bool=False, pill:str="")-
 
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
                  show_stats: bool=True, show_photos: bool=True):
-    rows = _ensure_positions(rows, formation)  # <-- ensure safe values
+    ensure_pitch_css()  # <--- ADD THIS LINE
+    rows = _ensure_positions(rows, formation)
     parts = formation_to_lines(formation)
     ...
 
