@@ -1,24 +1,25 @@
 # app.py — Powerleague Stats (Streamlit + Supabase)
-# Mobile-first (iPhone Safari), Overlap-free SVG pitch, Squad→Slots lineup editor, 5s/7s
-# Clean black & gold UI, fast loads, no drag libs
+# Mobile-first, Safari-friendly, single-SVG pitch (no overlaps), 5s/7s formations,
+# simple Squad→GK→Slots lineup editor, sleek black & gold UI.
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import date, datetime
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Dict, Tuple
 from supabase import create_client
 import uuid
 import io
+from PIL import Image
 
-# Optional HEIC support — we don't require this to run (prevents Safari/Cloud build stalls)
+# Optional HEIC support (if libheif not present, we degrade gracefully)
 try:
     import pillow_heif
     HEIF_OK = True
 except Exception:
     HEIF_OK = False
 
-from PIL import Image
+from streamlit.components.v1 import html as html_component
 
 # -----------------------------------------------------------------------------
 # App config
@@ -26,7 +27,7 @@ from PIL import Image
 st.set_page_config(page_title="Powerleague Stats", layout="wide", initial_sidebar_state="collapsed")
 
 # -----------------------------------------------------------------------------
-# Secrets / Supabase
+# Secrets
 # -----------------------------------------------------------------------------
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
@@ -41,26 +42,29 @@ def service():
     return sb_service if st.session_state.get("is_admin") else None
 
 # -----------------------------------------------------------------------------
-# Minimal, fast CSS (black & gold + table polish)
+# Global CSS — black & gold
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
 :root{--gold:#D4AF37;--bg:#0b0f14;--panel:#0f141a;--text:#e9eef3}
-html,body,.stApp{background:var(--bg); color:var(--text)}
-.block-container{padding-top:.6rem!important;padding-left:.7rem!important;padding-right:.7rem!important}
+html,body,.stApp{background:var(--bg);color:var(--text)}
+.block-container{padding-top:.6rem!important;padding-left:.6rem!important;padding-right:.6rem!important}
 h1,h2,h3,h4,h5{color:var(--text)}
 hr{border-color:rgba(255,255,255,.15)}
 thead tr th{background:rgba(255,255,255,.06)!important}
 .small{opacity:.85;font-size:.9rem}
-.card{padding:12px;border-radius:14px;background:#0f141a;border:1px solid rgba(255,255,255,.12)}
+.card{padding:12px;border-radius:14px;background:linear-gradient(180deg,#111722,#0d131c);border:1px solid rgba(255,255,255,.12)}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .metric{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding:10px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14)}
 .metric .k{opacity:.85}
 .metric .v{font-weight:900;font-size:1.05rem;color:#fff}
-.badge{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14)}
+.badge{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14)}
 .pillR{display:inline-flex;align-items:center;gap:.35rem;padding:.18rem .5rem;border-radius:999px;border:1px solid rgba(255,255,255,.2)}
 .ovr{font-weight:900;color:#D4AF37}
-.stDataFrame, .stTable {background:#10171f;border-radius:12px;border:1px solid rgba(255,255,255,.1)}
+
+/* Pitch wrapper — iframe inner HTML also uses light styles but we set here too */
+.pitchWrap{width:100%;max-width:880px;margin:0 auto}
+@media (max-width: 430px){ .pitchWrap{max-width:100%} }
 </style>
 """, unsafe_allow_html=True)
 
@@ -119,14 +123,14 @@ def formation_to_lines(formation: Optional[str]) -> List[int]:
         return []
 
 def validate_formation(formation: Optional[str], side_count: int) -> str:
-    """5s: 4 outfielders; 7s: 6 outfielders."""
+    """5s: 4 outfield; 7s: 6 outfield."""
     try:
         parts = [int(x) for x in str(formation or "").split("-") if str(x).strip().isdigit()]
     except Exception:
         parts = []
-    outfield_needed = 4 if int(side_count or 5) == 5 else 6
-    if sum(parts) != outfield_needed or not parts or any(p <= 0 for p in parts):
-        return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
+    target = 4 if int(side_count or 5) == 5 else 6
+    if sum(parts) != target or not parts or any(p <= 0 for p in parts):
+        return "1-2-1" if target == 4 else "2-1-2-1"
     return "-".join(str(p) for p in parts)
 
 def normalize_lineup_names(df: pd.DataFrame) -> pd.DataFrame:
@@ -175,160 +179,152 @@ def _ensure_positions(df: pd.DataFrame, formation: str) -> pd.DataFrame:
     return rows
 
 # -----------------------------------------------------------------------------
-# Overlap-free SVG pitch (fast on Safari)
+# SVG pitch builder (string)
 # -----------------------------------------------------------------------------
-def pill_html(goals: int, assists: int) -> str:
-    g = int(goals or 0); a = int(assists or 0)
-    parts = []
-    if g > 0: parts.append(f"<g class='g'><rect rx='6' ry='6' fill='none' stroke='#D4AF37' stroke-width='1.4'/><text>G {g}</text></g>")
-    if a > 0: parts.append(f"<g class='a'><rect rx='6' ry='6' fill='none' stroke='#86c7ff' stroke-width='1.4'/><text>A {a}</text></g>")
-    if not parts: return ""
-    return "<g class='pill'>" + "".join(parts) + "</g>"
+def _svg_circle_with_text(cx, cy, r, txt, motm=False, gk=False):
+    ring = " stroke='#4db6ff' stroke-width='3' " if gk else (" stroke='#D4AF37' stroke-width='3' " if motm else " stroke='#2f4860' stroke-width='3' ")
+    fill = "#0b131b" if gk else "#0e1620"
+    base = (
+        f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='{fill}' {ring}/>"
+        f"<text x='{cx}' y='{cy+4}' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,Roboto' font-weight='800' font-size='{int(r*0.7)}' fill='#e8f4ff'>{txt}</text>"
+    )
+    if gk:
+        base += (
+            f"<rect x='{cx+r-18}' y='{cy-r-18}' rx='5' ry='5' width='26' height='18' fill='rgba(77,182,255,0.18)' stroke='rgba(77,182,255,0.55)'/>"
+            f"<text x='{cx+r-5}' y='{cy-r-4}' text-anchor='end' font-size='11' fill='#bfe6ff' font-weight='800'>GK</text>"
+        )
+    return base
 
-def render_pitch_svg_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
-                              formation_a: str, formation_b: str,
-                              motm_name: Optional[str],
-                              team_a: str, team_b: str):
-    """
-    Single responsive SVG (1000x650 viewBox). Guarantees no-overlap by computing
-    dynamic bubble radius per line based on available band height and player count.
-    """
-    # Geometry (SVG viewBox units)
+def _svg_name_and_pills(cx, cy, name, goals, assists):
+    y1 = cy + 28
+    y2 = y1 + 18
+    name_w = 150
+    name = str(name)
+    n = name if len(name) <= 18 else (name[:16] + "…")
+    pills = []
+    if int(goals or 0) > 0:
+        pills.append(
+            f"<g><rect x='{cx-26}' y='{y2-13}' rx='7' ry='7' width='24' height='16' fill='rgba(212,175,55,0.18)' stroke='rgba(212,175,55,0.55)'/>"
+            f"<text x='{cx-14}' y='{y2}' text-anchor='middle' font-size='11' fill='#D4AF37' font-weight='800'>G{int(goals)}</text></g>"
+        )
+    if int(assists or 0) > 0:
+        pills.append(
+            f"<g><rect x='{cx+2}' y='{y2-13}' rx='7' ry='7' width='24' height='16' fill='rgba(134,199,255,0.18)' stroke='rgba(134,199,255,0.55)'/>"
+            f"<text x='{cx+14}' y='{y2}' text-anchor='middle' font-size='11' fill='#86c7ff' font-weight='800'>A{int(assists)}</text></g>"
+        )
+    return (
+        f"<rect x='{cx-name_w/2}' y='{y1-14}' rx='8' ry='8' width='{name_w}' height='22' fill='rgba(0,0,0,0.25)' stroke='rgba(255,255,255,0.18)'/>"
+        f"<text x='{cx}' y='{y1+2}' text-anchor='middle' font-size='13' font-weight='800' fill='#F1F6FA' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,Roboto'>{n}</text>"
+        + "".join(pills)
+    )
+
+def render_pitch_svg(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
+                     formation_a: str, formation_b: str,
+                     motm_name: Optional[str]) -> str:
     W, H = 1000, 650
-    margin_x, margin_y = 24, 24
-    inner_left, inner_right = margin_x, W - margin_x
-    inner_top, inner_bot = margin_y, H - margin_y
+    margin = 30
+    left_box_w, six_w = 165, 75
+    box_top, box_bot = 130, H-130
+    six_top, six_bot = 250, H-250
+    goal_depth = 10
 
-    # Pitch features
-    box_w = 165; six_w = 76
-    box_top = inner_top + (H - 2*margin_y) * 0.20
-    box_bot = inner_bot - (H - 2*margin_y) * 0.20
-    six_top = inner_top + (H - 2*margin_y) * 0.39
-    six_bot = inner_bot - (H - 2*margin_y) * 0.39
-    pen_y = (inner_top + inner_bot) / 2
+    left_min, left_max  = margin+10, 450
+    right_min, right_max = 550, W-(margin+10)
 
-    # Lines extents for teams (x progression towards center)
-    def x_lines(n_lines: int, side: str) -> List[float]:
-        # Distance from goal to halfway per line depth
-        if side == "L":
-            start = inner_left + 20
-            end = W/2 - 60
-            return [start + (i+1)*(end-start)/(n_lines+1) for i in range(n_lines)]
-        else:
-            start = inner_right - 20
-            end = W/2 + 60
-            return [start - (i+1)*(start-end)/(n_lines+1) for i in range(n_lines)]
+    def parts_of(f):
+        p = formation_to_lines(f)
+        if sum(p) in (4,6): return p
+        return [1,2,1] if sum(p) <= 4 else [2,1,2,1]
 
-    # Bands by line index (vertical slices) to avoid cross-line overlap
-    def y_bands(n_lines: int) -> List[Tuple[float,float]]:
-        # Slightly narrower to leave space for name + pills
-        total_h = (inner_bot - inner_top) - 20
-        base_top = inner_top + 10
-        band = total_h / n_lines
-        return [(base_top + i*band, base_top + (i+1)*band) for i in range(n_lines)]
-
-    # Build team HTML
-    def team_group(rows: pd.DataFrame, formation: str, side: str) -> str:
-        r = _ensure_positions(normalize_lineup_names(rows), formation)
-        parts = formation_to_lines(formation)
-        n_lines = max(1, len(parts))
-        xs = x_lines(n_lines, side)
-        bands = y_bands(n_lines)
-
-        # GK position inside six-yard box
+    def layout_side(rows: pd.DataFrame, parts: List[int], left_side: bool) -> List[str]:
         out = []
-        gk = r[r["is_gk"]==True]
+        n_lines = max(1, len(parts))
+        available_top, available_bottom = margin+10, H-(margin+10)
+        band_h = (available_bottom - available_top) / n_lines
+        bands = [(available_top + i*band_h, available_top + (i+1)*band_h) for i in range(n_lines)]
+
+        # GK
+        gk = rows[rows.get("is_gk") == True]
         if not gk.empty:
-            nm = str(gk.iloc[0].get("name") or gk.iloc[0].get("player_name") or "")
-            x = inner_left + six_w/2 if side=="L" else inner_right - six_w/2
-            y = (six_top + six_bot)/2
-            out.append(player_node(x, y, nm, motm=(motm_name==nm), gk=True,
-                                   goals=int(gk.iloc[0].get("goals") or 0),
-                                   assists=int(gk.iloc[0].get("assists") or 0)))
-        # Outfield by line
-        for i in range(n_lines):
-            line_df = r[(r["is_gk"]!=True) & (r["line"]==i)].copy()
-            if line_df.empty: continue
+            r = gk.iloc[0]; nm = str(r.get("name") or r.get("player_name") or "")
+            cx = (left_min + 22) if left_side else (right_max - 22)
+            cy = H/2
+            out.append(_svg_circle_with_text(cx, cy, 26, initials(nm), motm=(motm_name==nm), gk=True))
+            out.append(_svg_name_and_pills(cx, cy, nm, r.get("goals"), r.get("assists")))
+
+        # Outfield by lines
+        for i, count in enumerate(parts):
+            t = (i + 1) / (n_lines + 1)
+            cx = (left_min + (left_max - left_min) * t) if left_side else (right_max - (right_max - right_min) * t)
+            line_df = rows[(rows.get("is_gk") != True) & (rows.get("line") == i)].copy()
+            if line_df.empty: 
+                continue
             line_df["slot"] = pd.to_numeric(line_df["slot"], errors="coerce")
             line_df = line_df.sort_values("slot", na_position="last").reset_index(drop=True)
 
-            ymin,ymax = bands[i]
+            ymin, ymax = bands[i]
+            safe_pad = 18
+            ymin += safe_pad; ymax -= safe_pad
             count = len(line_df)
-            # Compute radius to guarantee no overlap in this band
-            vgap = 14
-            max_r = ( (ymax - ymin) - vgap*(count+1) ) / (2*count)
-            # Clamp to keep readable on phones
-            r_pix = max(20, min(34, max_r))
-            # Place players evenly in the band
+
             for j in range(count):
-                nm = str(line_df.iloc[j].get("name") or line_df.iloc[j].get("player_name") or "")
-                y = ymin + (j+1)*( (ymax-ymin) / (count+1) )
-                x = xs[i]
-                out.append(player_node(x, y, nm, motm=(motm_name==nm), gk=False,
-                                       goals=int(line_df.iloc[j].get("goals") or 0),
-                                       assists=int(line_df.iloc[j].get("assists") or 0),
-                                       r_override=r_pix))
-        return "".join(out)
+                rr = line_df.iloc[j]
+                nm = str(rr.get("name") or rr.get("player_name") or "")
+                y_t = (j + 1) / (count + 1)
+                cy = ymin + y_t * (ymax - ymin)
+                r = min(30, max(24, (ymax - ymin) / (count*3.2)))
+                out.append(_svg_circle_with_text(cx, cy, r, initials(nm), motm=(motm_name==nm), gk=False))
+                out.append(_svg_name_and_pills(cx, cy, nm, rr.get("goals"), rr.get("assists")))
+        return out
 
-    # Player node (circle + initials + name + small pills). Name width constrained.
-    def player_node(x: float, y: float, name: str, *, motm: bool, gk: bool, goals: int, assists: int, r_override: Optional[float]=None) -> str:
-        r = r_override if r_override is not None else 30.0
-        stroke = "#4db6ff" if gk else ("#D4AF37" if motm else "#2f4860")
-        fill = "#0e1620" if not gk else "#0c1e2b"
-        text_color = "#e8f4ff"
-        # Pills below bubble (SVG group)
-        pill = pill_html(goals, assists)
-        # Name baseline below pills
-        name_safe = (name or "").strip()
-        initials_txt = initials(name_safe)
-        return f"""
-        <g class="p">
-          <circle cx="{x}" cy="{y}" r="{r}" fill="{fill}" stroke="{stroke}" stroke-width="3"/>
-          <text x="{x}" y="{y+4}" text-anchor="middle" font-size="{r*0.9}" font-weight="700" fill="{text_color}" dominant-baseline="middle">{initials_txt}</text>
-          {'<rect x="'+str(x+r-14)+'" y="'+str(y-r-14)+'" width="28" height="18" rx="6" ry="6" fill="none" stroke="#4db6ff" stroke-width="1.8"/><text x="'+str(x+r)+'" y="'+str(y-r-1)+'" text-anchor="middle" font-size="12" font-weight="800" fill="#bfe6ff" dominant-baseline="middle">GK</text>' if gk else ''}
-          {pill}
-          <text x="{x}" y="{y + r + 26}" text-anchor="middle" font-size="16" font-weight="800" fill="#F1F6FA">{name_safe[:18]}</text>
-        </g>
-        """
+    a = _ensure_positions(normalize_lineup_names(a_rows), formation_a)
+    b = _ensure_positions(normalize_lineup_names(b_rows), formation_b)
+    pa = parts_of(formation_a)
+    pb = parts_of(formation_b)
 
-    # SVG scaffold
-    svg_header = f"""
-    <svg viewBox="0 0 {W} {H}" width="100%" style="max-width:880px;display:block;margin:0 auto;border-radius:16px;background:#2c7b3f;border:1px solid rgba(255,255,255,.18)">
-      <!-- pitch outlines -->
-      <rect x="{inner_left}" y="{inner_top}" width="{inner_right-inner_left}" height="{inner_bot-inner_top}" fill="none" stroke="#fff" stroke-width="4"/>
-      <line x1="{W/2}" y1="{inner_top}" x2="{W/2}" y2="{inner_bot}" stroke="#fff" stroke-width="4"/>
-      <circle cx="{W/2}" cy="{H/2}" r="50" fill="none" stroke="#fff" stroke-width="4"/>
-      <circle cx="{W/2}" cy="{H/2}" r="6" fill="#fff"/>
+    pitch = []
+    pitch.append(f"<svg viewBox='0 0 {W} {H}' width='100%' height='100%' preserveAspectRatio='xMidYMid meet'>")
+    pitch.append("<defs>"
+                 "<linearGradient id='g' x1='0' y1='0' x2='0' y2='1'>"
+                 "<stop offset='0%' stop-color='#2f7a43'/>"
+                 "<stop offset='60%' stop-color='#2a6f3c'/>"
+                 "<stop offset='100%' stop-color='#235f34'/>"
+                 "</linearGradient>"
+                 "</defs>")
+    pitch.append(f"<rect x='0' y='0' width='{W}' height='{H}' fill='url(#g)'/>")
+    pitch.append(f"<rect x='{margin}' y='{margin}' width='{W-2*margin}' height='{H-2*margin}' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<line x1='{W/2}' y1='{margin}' x2='{W/2}' y2='{H-margin}' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<circle cx='{W/2}' cy='{H/2}' r='65' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<circle cx='{W/2}' cy='{H/2}' r='4' fill='#ffffff'/>")
+    # Left box
+    pitch.append(f"<rect x='{margin}' y='{box_top}' width='{left_box_w}' height='{box_bot-box_top}' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<rect x='{margin}' y='{six_top}' width='{six_w}' height='{six_bot-six_top}' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<line x1='{margin-goal_depth}' y1='{H/2-8}' x2='{margin}' y2='{H/2-8}' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<line x1='{margin-goal_depth}' y1='{H/2+8}' x2='{margin}' y2='{H/2+8}' stroke='#ffffff' stroke-width='3'/>")
+    # Right box
+    pitch.append(f"<rect x='{W-margin-left_box_w}' y='{box_top}' width='{left_box_w}' height='{box_bot-box_top}' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<rect x='{W-margin-six_w}' y='{six_top}' width='{six_w}' height='{six_bot-six_top}' fill='none' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<line x1='{W-margin}' y1='{H/2-8}' x2='{W-margin+goal_depth}' y2='{H/2-8}' stroke='#ffffff' stroke-width='3'/>")
+    pitch.append(f"<line x1='{W-margin}' y1='{H/2+8}' x2='{W-margin+goal_depth}' y2='{H/2+8}' stroke='#ffffff' stroke-width='3'/>")
 
-      <!-- boxes -->
-      <rect x="{inner_left}" y="{box_top}" width="{box_w}" height="{box_bot-box_top}" fill="none" stroke="#fff" stroke-width="4"/>
-      <rect x="{inner_left}" y="{six_top}" width="{six_w}" height="{six_bot-six_top}" fill="none" stroke="#fff" stroke-width="4"/>
-      <circle cx="{inner_left+110}" cy="{pen_y}" r="6" fill="#fff"/>
+    pitch += layout_side(a, pa, left_side=True)
+    pitch += layout_side(b, pb, left_side=False)
 
-      <rect x="{inner_right-box_w}" y="{box_top}" width="{box_w}" height="{box_bot-box_top}" fill="none" stroke="#fff" stroke-width="4"/>
-      <rect x="{inner_right-six_w}" y="{six_top}" width="{six_w}" height="{six_bot-six_top}" fill="none" stroke="#fff" stroke-width="4"/>
-      <circle cx="{inner_right-110}" cy="{pen_y}" r="6" fill="#fff"/>
+    pitch.append("</svg>")
+    return "<div class='pitchWrap'>" + "".join(pitch) + "</div>"
 
-      <style>
-        text {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif; }}
-        .pill > g {{ }}
-        .pill > g rect {{ width: 44; height: 22; }}
-        .pill > g.g rect {{ stroke: #D4AF37; }}
-        .pill > g.a rect {{ stroke: #86c7ff; }}
-        .pill > g text {{ fill: #F1F6FA; font-weight: 800; font-size: 12; dominant-baseline: middle; }}
-        /* Layout two pills side-by-side, centered under the bubble */
-        .pill {{ transform: translate(0, 0); }}
-      </style>
-    """
-    svg_footer = "</svg>"
-
-    # Ensure formations validated by side_count
-    a_rows = a_rows.copy(); b_rows = b_rows.copy()
-    # Build teams
-    a_grp = team_group(a_rows, formation_a, "L")
-    b_grp = team_group(b_rows, formation_b, "R")
-
-    st.markdown(svg_header + a_grp + b_grp + svg_footer, unsafe_allow_html=True)
+def render_match_pitch(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
+                       formation_a: str, formation_b: str,
+                       motm_name: Optional[str]):
+    # Isolate in iframe to avoid Streamlit tooltip/anchor DOM issues (Windows/Safari-safe)
+    inner = render_pitch_svg(a_rows, b_rows, formation_a, formation_b, motm_name)
+    wrapper = """
+    <html>
+      <head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+      <style>html,body{margin:0;padding:0;background:transparent}</style></head>
+      <body>""" + inner + """</body>
+    </html>"""
+    html_component(wrapper, height=540, scrolling=False)
 
 # -----------------------------------------------------------------------------
 # Stats fact table
@@ -361,7 +357,7 @@ def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFra
     return l[["match_id","season","gw","date","team","name","is_gk","goals","assists","for","against","result","contrib"]]
 
 # -----------------------------------------------------------------------------
-# Avatar upload
+# Avatar upload (HEIC → PNG when possible)
 # -----------------------------------------------------------------------------
 def upload_avatar(file) -> Optional[str]:
     if file is None:
@@ -369,7 +365,7 @@ def upload_avatar(file) -> Optional[str]:
     suffix = file.name.split(".")[-1].lower()
 
     if suffix in ["heic","heif"] and not HEIF_OK:
-        st.warning("HEIC isn’t supported on this server. Please upload a JPG/PNG (Tip: on iPhone, Share → Save as JPEG).")
+        st.warning("HEIC isn’t supported on this server. Please upload a JPG/PNG.")
         return None
 
     try:
@@ -430,7 +426,7 @@ def sidebar_admin():
             st.session_state["is_admin"] = False; st.rerun()
 
 # -----------------------------------------------------------------------------
-# Squad → Slots lineup editor (simple, stable on phones)
+# Squad → GK → Slots lineup editor
 # -----------------------------------------------------------------------------
 def suggest_squad_names(lfact: pd.DataFrame, team_name: str, fallback_pool: List[str]) -> List[str]:
     if lfact.empty:
@@ -602,7 +598,7 @@ def page_matches():
 
     m = msub[msub["id"] == mid].iloc[0]
 
-    # Filter lineups
+    # Lineups filtered
     a_rows = lineups[(lineups["match_id"] == mid) & (lineups["team"] == "Non-bibs")].copy()
     b_rows = lineups[(lineups["match_id"] == mid) & (lineups["team"] == "Bibs")].copy()
 
@@ -653,12 +649,12 @@ def page_matches():
                     }).eq("id", mid).execute()
                     clear_caches(); st.success("Saved."); st.rerun()
 
-    # Combined SVG pitch (safe for all screens)
+    # Combined pitch (SVG)
     side_count = int(m.get("side_count") or 5)
     fa_render = validate_formation(m.get("formation_a"), side_count)
     fb_render = validate_formation(m.get("formation_b"), side_count)
     st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
-    render_pitch_svg_combined(a_rows, b_rows, fa_render, fb_render, m.get("motm_name"), m["team_a"], m["team_b"])
+    render_match_pitch(a_rows, b_rows, fa_render, fb_render, m.get("motm_name"))
 
     # Admin: lineup editor
     if st.session_state.get("is_admin"):
@@ -669,7 +665,7 @@ def page_matches():
             lineup_squad_slots_editor("Bibs", mid, side_count, fb_render, b_rows, players, lfact, keypref=f"B_{mid}")
 
 # -----------------------------------------------------------------------------
-# Player ratings helpers
+# Ratings helpers
 # -----------------------------------------------------------------------------
 def form_string(results: List[str], n: int = 5) -> str:
     r = results[-n:][::-1]
@@ -705,7 +701,7 @@ def _ratings_from_dataset(lfact: pd.DataFrame, mine: pd.DataFrame) -> Dict[str,i
     p_shoot = _percentile(agg["GPG"], gpg)
     p_pass  = _percentile(agg["APG"], apg)
     p_imp   = _percentile(agg["Win%"], winp_p)
-    def map_rating(p): return int(round(40 + (p/100.0)*52))  # 40-92 range (fewer 99s)
+    def map_rating(p): return int(round(40 + (p/100.0)*52))  # 40-92
     shooting = map_rating(p_shoot)
     passing  = map_rating(p_pass)
     impact   = map_rating(p_imp)
@@ -775,14 +771,6 @@ def page_players():
     contrib = mine["contrib"].mean() if "contrib" in mine.columns else 0
 
     n_last = st.number_input("Last N games", 1, max(1, gp), min(5, gp), key="pp_last")
-    def form_string(results: List[str], n: int = 5) -> str:
-        r = results[-n:][::-1]
-        out = []
-        for x in r:
-            if x == "W": out.append("🟩")
-            elif x == "D": out.append("🟨")
-            else: out.append("🟥")
-        return "".join(out) if out else "—"
     frm = form_string(mine["result"].tolist(), n=int(n_last))
     ratings = _ratings_from_dataset(lfact, mine)
 
@@ -810,8 +798,6 @@ def page_players():
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    st.markdown("#### Overview")
     st.markdown("<div class='card-grid'>", unsafe_allow_html=True)
     for k, v in [
         ("Games (GP)", gp),
@@ -839,7 +825,7 @@ def page_players():
     with c1:
         st.markdown("#### Best teammate")
         min_meet = st.number_input("Min games together", 1, 50, 1, key="pp_bt_min")
-        bt = best_teammate_table(build_fact(fetch_players(), fetch_matches(), fetch_lineups()), sel, int(min_meet))
+        bt = best_teammate_table(lfact, sel, int(min_meet))
         if not bt.empty:
             st.dataframe(bt.head(10), use_container_width=True, hide_index=True)
         else:
@@ -847,7 +833,7 @@ def page_players():
     with c2:
         st.markdown("#### Nemesis")
         min_meet_n = st.number_input("Min meetings vs opponent", 1, 50, 1, key="pp_nem_min")
-        nem = nemesis_table_for_player(build_fact(fetch_players(), fetch_matches(), fetch_lineups()), sel, int(min_meet_n))
+        nem = nemesis_table_for_player(lfact, sel, int(min_meet_n))
         if not nem.empty:
             st.dataframe(nem.head(10), use_container_width=True, hide_index=True)
         else:
