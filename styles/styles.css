@@ -51,3 +51,5 @@ footer, #MainMenu { display:none }
 .pl-card{ background:var(--card); border:1px solid var(--card-br); border-radius:14px; padding:12px 14px; min-width:120px; text-align:center }
 .pl-card-val{ font-weight:800; font-size:20px; color:#fff }
 .pl-card-lbl{ color:var(--muted); font-size:12px; margin-top:2px }
+.pl-name{ margin-top:6px; }
+.pl-chips{ margin-top:6px; }
