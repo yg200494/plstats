@@ -244,16 +244,25 @@ def stat_pill(goals: int, assists: int) -> str:
     return f"<span class='pill'>{'&nbsp;&nbsp;'.join(parts)}</span>"
 
 def slot_html(x_pct: float, y_pct: float, name: str, *, motm: bool=False, pill: str="", is_gk: bool=False) -> str:
-    cls = "bubble"; 
-    if motm: cls += " motm"
-    if is_gk: cls += " gk"
+    cls = "bubble"
+    if motm:
+        cls += " motm"
+    if is_gk:
+        cls += " gk"
+
+    # Build the GK badge outside the f-string to avoid backslashes in an expression
+    gk_badge = "<span class='chip-gk'>GK</span>" if is_gk else ""
+
     return (
         f"<div class='slot' style='left:{x_pct}%;top:{y_pct}%;'>"
-        f"  <div class='{cls}'><span class='init'>{initials(name)}</span>{'<span class=\"chip-gk\">GK</span>' if is_gk else ''}</div>"
+        f"  <div class='{cls}'>"
+        f"    <span class='init'>{initials(name)}</span>{gk_badge}"
+        f"  </div>"
         f"  <div class='name'>{name}</div>"
         f"  {pill}"
         f"</div>"
     )
+
 
 def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
                                 formation_a: str, formation_b: str,
