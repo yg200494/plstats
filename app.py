@@ -458,12 +458,11 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
             for pid, r in card_keys:
                 name = r.get("name") or r.get("player_name") or ""
                 g = int(r.get("goals") or 0); a = int(r.get("assists") or 0)
-                is_motm = False  # purely visual in editor
                 # a neat, high-contrast chip
-                with mui.Paper key=f"{keypref}_{pid}" elevation=4 sx={
-                    "borderRadius": 2, "p": 0.5, "textAlign": "center",
+                with mui.Paper(key=f"{keypref}_{pid}", elevation=4, sx={
+                    "borderRadius": 8, "p": 0.5, "textAlign": "center",
                     "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
-                }:
+                }):
                     with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
                         # Initials bubble (consistent size)
                         init = initials(name)
@@ -490,8 +489,14 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
             if lid in locs:
                 x,y = locs[lid]
                 is_gk, line, abs_slot = _grid_to_line_abs(parts, x, y, cols=cols)
-                updates.append({"id": pid, "is_gk": bool(is_gk), "line": (None if is_gk else int(line)), "slot": (None if is_gk else int(abs_slot))})
+                updates.append({
+                    "id": pid,
+                    "is_gk": bool(is_gk),
+                    "line": (None if is_gk else int(line)),
+                    "slot": (None if is_gk else int(abs_slot))
+                })
     return updates
+
 
 # ---------------------------------
 # List-based DnD fallback (streamlit-sortables)
