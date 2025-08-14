@@ -108,39 +108,61 @@ def formation_to_lines(formation: str) -> List[int]:
         return parts if parts else [1,2,1]
     except Exception:
         return [1,2,1]
-
 def _ensure_positions(df: pd.DataFrame, formation: str) -> pd.DataFrame:
-    """Ensure is_gk/line/slot exist and are sane for the given formation."""
+    """
+    Guarantee sane values for is_gk/line/slot for a given formation.
+    - Non-GK with missing line/slot get centered defaults.
+    - All values clamped to formation bounds.
+    """
     rows = df.copy()
     parts = formation_to_lines(formation)
+    n_lines = max(1, len(parts))
     max_slots = max(parts + [1])
+
+    # Ensure required columns exist
     for c in ["is_gk", "line", "slot", "goals", "assists"]:
         if c not in rows.columns:
             rows[c] = None
+
     rows["is_gk"] = rows["is_gk"].fillna(False).astype(bool)
     rows["goals"] = pd.to_numeric(rows["goals"], errors="coerce").fillna(0).astype(int)
     rows["assists"] = pd.to_numeric(rows["assists"], errors="coerce").fillna(0).astype(int)
-    # Clamp
+
+    # Normalize to nullable integers
+    rows["line"] = pd.to_numeric(rows["line"], errors="coerce").astype("Int64")
+    rows["slot"] = pd.to_numeric(rows["slot"], errors="coerce").astype("Int64")
+
+    center_line = (n_lines - 1) // 2  # middle row
+
     for i in rows.index:
-        if rows.at[i, "is_gk"]:
-            rows.at[i, "line"] = None
-            rows.at[i, "slot"] = None
+        if bool(rows.at[i, "is_gk"]):
+            rows.at[i, "line"] = pd.NA
+            rows.at[i, "slot"] = pd.NA
+            continue
+
+        # LINE: default to center, then clamp
+        ln = rows.at[i, "line"]
+        if pd.isna(ln):
+            ln = center_line
         else:
-            ln = rows.at[i, "line"]
-            sl = rows.at[i, "slot"]
-            if pd.isna(ln):
-                rows.at[i, "line"] = None
-            else:
-                ln = int(ln)
-                rows.at[i, "line"] = min(max(ln, 0), len(parts)-1)
-            if rows.at[i, "line"] is not None:
-                slots = parts[rows.at[i, "line"]]
-                offset = (max_slots - slots)//2
-                if pd.isna(sl):
-                    rows.at[i, "slot"] = offset + (slots-1)//2
-                else:
-                    rows.at[i, "slot"] = min(max(int(sl), offset), offset+slots-1)
+            ln = int(ln)
+        ln = max(0, min(ln, n_lines - 1))
+        rows.at[i, "line"] = ln
+
+        # SLOT: default to centered within that line, then clamp
+        slots = int(parts[ln])
+        offset = (max_slots - slots) // 2
+        sl = rows.at[i, "slot"]
+        if pd.isna(sl):
+            sl = offset + (slots - 1) // 2
+        else:
+            sl = int(sl)
+        sl = max(offset, min(sl, offset + slots - 1))
+        rows.at[i, "slot"] = sl
+
     return rows
+
+
 
 def build_fact(players: pd.DataFrame, matches: pd.DataFrame, lineups: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
     """Create lineup fact with joined player names/photos, per-match rows."""
@@ -215,8 +237,10 @@ def slot_html(x_pct:float, y_pct:float, name:str, motm:bool=False, pill:str="")-
 
 def render_pitch(rows: pd.DataFrame, formation: str, motm_name: Optional[str], team_label: str,
                  show_stats: bool=True, show_photos: bool=True):
-    rows = rows.copy()
+    rows = _ensure_positions(rows, formation)  # <-- ensure safe values
     parts = formation_to_lines(formation)
+    ...
+
     # layout constants
     top_margin = 12
     bottom_margin = 10
