@@ -748,6 +748,209 @@ def header():
                         st.rerun()
                     else:
                         st.error("Invalid password")
+# ---------------------------------
+# Tap-to-place Pitch Editor (no external libs)
+# ---------------------------------
+def tap_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
+    """
+    Reliable pitch editor: tap a player, then tap a slot (or GK pad) to place them.
+    Stores pending changes in session state until Save.
+    Returns list[dict] updates for lineups(id, is_gk, line, slot).
+    """
+    rows = _ensure_positions(team_rows, formation).copy()
+    parts = formation_to_lines(formation)
+    max_slots = max(parts + [1])
+
+    # --- session state (per side + match) ---
+    pos_key = f"posmap_{keypref}_{mid}"
+    sel_key = f"sel_{keypref}_{mid}"
+
+    # Initialize pos map from DB the first time (or if formation changed size)
+    def _init_pos():
+        pos = {}
+        for _, r in rows.iterrows():
+            pid = str(r["id"])
+            is_gk = bool(r.get("is_gk"))
+            ln = None if is_gk else (int(r.get("line")) if pd.notna(r.get("line")) else None)
+            sl = None if is_gk else (int(r.get("slot")) if pd.notna(r.get("slot")) else None)
+            pos[pid] = {"is_gk": is_gk, "line": ln, "slot": sl, "name": r.get("name") or r.get("player_name") or ""}
+        st.session_state[pos_key] = pos
+
+    if pos_key not in st.session_state:
+        _init_pos()
+    pos = st.session_state[pos_key]
+
+    # If formation size changed (say 5s -> 7s), re-snap positions to safe defaults
+    if len(parts) > 0:
+        for pid, v in pos.items():
+            if v["is_gk"]:
+                v["line"], v["slot"] = None, None
+            else:
+                v["line"] = 0 if v["line"] is None else min(max(int(v["line"]), 0), len(parts)-1)
+                slots = parts[v["line"]]
+                offset = (max_slots - slots)//2
+                if v["slot"] is None:
+                    v["slot"] = offset + (slots-1)//2
+                else:
+                    v["slot"] = min(max(int(v["slot"]), offset), offset + slots - 1)
+
+    # Utility lookups
+    def occupant_at(line_i: int, abs_slot: int) -> Optional[str]:
+        for pid, v in pos.items():
+            if (not v["is_gk"]) and v["line"] == line_i and v["slot"] == abs_slot:
+                return pid
+        return None
+
+    def gk_pid() -> Optional[str]:
+        for pid, v in pos.items():
+            if v["is_gk"]:
+                return pid
+        return None
+
+    # Bench is any non-GK with line/slot == None
+    def bench_ids() -> List[str]:
+        out = []
+        for pid, v in pos.items():
+            if (not v["is_gk"]) and (v["line"] is None or v["slot"] is None):
+                out.append(pid)
+        return out
+
+    # --- UI: player selector (chips) ---
+    names = [(pid, v["name"]) for pid, v in pos.items()]
+    names_sorted = sorted(names, key=lambda t: t[1].lower())
+    selected_pid = st.session_state.get(sel_key)
+
+    with st.container(border=True):
+        st.markdown(f"**Select player to place ({team_label})**")
+        cols = st.columns(4)
+        for i, (pid, nm) in enumerate(names_sorted):
+            c = cols[i % 4]
+            is_sel = (selected_pid == pid)
+            label = ("✅ " if is_sel else "• ") + nm
+            if c.button(label, key=f"{keypref}_{mid}_pick_{pid}"):
+                st.session_state[sel_key] = pid if not is_sel else None
+                st.rerun()
+
+    # --- UI: GK pad ---
+    st.markdown("**Goalkeeper**")
+    gk_current = gk_pid()
+    gcol1, gcol2 = st.columns([3,1])
+    gk_label = pos[gk_current]["name"] if gk_current else "— none —"
+    gcol1.info(f"Current GK: {gk_label}")
+    if gcol2.button("Set selected as GK", key=f"{keypref}_{mid}_setgk"):
+        if selected_pid:
+            # clear previous GK
+            if gk_current and gk_current in pos:
+                pos[gk_current]["is_gk"] = False
+                pos[gk_current]["line"] = None
+                pos[gk_current]["slot"] = None
+            # set new GK
+            pos[selected_pid]["is_gk"] = True
+            pos[selected_pid]["line"] = None
+            pos[selected_pid]["slot"] = None
+            st.success(f"Set GK: {pos[selected_pid]['name']}")
+            st.rerun()
+        else:
+            st.warning("Pick a player first.")
+
+    # Unset GK (bench) if needed
+    if gk_current and st.button("Bench GK", key=f"{keypref}_{mid}_benchgk"):
+        pos[gk_current]["is_gk"] = False
+        pos[gk_current]["line"] = None
+        pos[gk_current]["slot"] = None
+        st.rerun()
+
+    # --- UI: Pitch grid (tap to place) ---
+    st.markdown("**Pitch** (tap a slot to place the selected player, tap an occupied slot with no selection to bench that player)")
+    for i, slots in enumerate(parts):
+        st.write(f"Row {i+1}")
+        cols = st.columns(slots)
+        offset = (max_slots - slots)//2
+        for j in range(slots):
+            abs_slot = offset + j
+            occ = occupant_at(i, abs_slot)
+            if occ:
+                nm = pos[occ]["name"]
+                lbl = f"🟢 {nm}"
+                if cols[j].button(lbl, key=f"{keypref}_{mid}_r{i}_s{j}"):
+                    if selected_pid:
+                        # Move selected here
+                        # If someone already here, bench them
+                        pos[occ]["line"], pos[occ]["slot"] = None, None
+                        pos[occ]["is_gk"] = False
+                        # Clear selected from anywhere else
+                        for pid2, v2 in pos.items():
+                            if pid2 != selected_pid and (not v2["is_gk"]) and v2["line"] == i and v2["slot"] == abs_slot:
+                                v2["line"], v2["slot"] = None, None
+                        # Place selected
+                        pos[selected_pid]["is_gk"] = False
+                        pos[selected_pid]["line"] = i
+                        pos[selected_pid]["slot"] = abs_slot
+                        st.rerun()
+                    else:
+                        # No selection: bench the occupant
+                        pos[occ]["line"], pos[occ]["slot"] = None, None
+                        pos[occ]["is_gk"] = False
+                        st.rerun()
+            else:
+                lbl = "＋ Empty"
+                if cols[j].button(lbl, key=f"{keypref}_{mid}_r{i}_s{j}"):
+                    if selected_pid:
+                        # Clear selected from any other slot
+                        for pid2, v2 in pos.items():
+                            if pid2 == selected_pid:
+                                continue
+                            if (not v2["is_gk"]) and v2["line"] == i and v2["slot"] == abs_slot:
+                                v2["line"], v2["slot"] = None, None
+                        pos[selected_pid]["is_gk"] = False
+                        pos[selected_pid]["line"] = i
+                        pos[selected_pid]["slot"] = abs_slot
+                        st.rerun()
+                    else:
+                        st.warning("Pick a player first.")
+
+    # --- UI: Bench quick view ---
+    b = bench_ids()
+    if b:
+        st.caption("Bench: " + ", ".join(pos[x]["name"] for x in b))
+
+    # --- Buttons ---
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Auto-spread", key=f"{keypref}_{mid}_auto"):
+        # Simple spread: fill rows from left to right with whoever is benched
+        pool = b[:]
+        # Remove GK from pool if any
+        if gk_current and gk_current in pool: pool.remove(gk_current)
+        for i, slots in enumerate(parts):
+            offset = (max_slots - slots)//2
+            for j in range(slots):
+                abs_slot = offset + j
+                occ = occupant_at(i, abs_slot)
+                if not occ and pool:
+                    pid = pool.pop(0)
+                    pos[pid]["is_gk"] = False
+                    pos[pid]["line"] = i
+                    pos[pid]["slot"] = abs_slot
+        st.rerun()
+
+    if c2.button("Bench all", key=f"{keypref}_{mid}_benchall"):
+        for pid in list(pos.keys()):
+            if not pos[pid]["is_gk"]:
+                pos[pid]["line"], pos[pid]["slot"] = None, None
+        st.rerun()
+
+    # Build updates for Save
+    updates = []
+    for _, r in rows.iterrows():
+        pid = str(r["id"])
+        v = pos.get(pid, {})
+        updates.append({
+            "id": pid,
+            "is_gk": bool(v.get("is_gk")),
+            "line": None if v.get("is_gk") else (None if v.get("line") is None else int(v["line"])),
+            "slot": None if v.get("is_gk") else (None if v.get("slot") is None else int(v["slot"])),
+        })
+    return updates
 
 
 # ---------------------------------
@@ -956,14 +1159,37 @@ def page_matches():
                         st.rerun()
 
     # --- Drag & drop lineup (robust, auto-fallback) ---
-    with st.expander("🧲 Drag & drop lineup", expanded=False):
-        s = service()
-        if not s:
-            st.info("Login as admin.")
-        else:
-            updates = []
-            colA, colB = st.columns(2)
-            use_compat = bool(st.session_state.get("compat_dnd", False))
+   with st.expander("🧲 Arrange lineup", expanded=False):
+    s = service()
+    if not s:
+        st.info("Login as admin.")
+    else:
+        updates = []
+        colA, colB = st.columns(2)
+
+        with colA:
+            st.markdown(f"### {m['team_a']}")
+            upd_a = tap_pitch_editor(a_rows, fa, m["team_a"], keypref="A", mid=mid)
+            if upd_a: updates.extend(upd_a)
+
+        with colB:
+            st.markdown(f"### {m['team_b']}")
+            upd_b = tap_pitch_editor(b_rows, fb, m["team_b"], keypref="B", mid=mid)
+            if upd_b: updates.extend(upd_b)
+
+        if updates and st.button("💾 Save all positions", type="primary", key=f"save_tap_{mid}"):
+            try:
+                s = service()
+                CHUNK = 20
+                for i in range(0, len(updates), CHUNK):
+                    s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
+                clear_caches()
+                st.success("Positions saved.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Save failed: {e}")
+
+
 
             # A side
             with colA:
