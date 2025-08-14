@@ -99,6 +99,21 @@ def motm_badge(name: str) -> str:
 def initials(name: str) -> str:
     return "".join([t[0] for t in str(name).split()[:2]]).upper() or "?"
 
+def validate_formation(formation: Optional[str], side_count: int) -> str:
+    """Ensure formation matches side_count outfielders (4 for 5s, 6 for 7s)."""
+    try:
+        parts = [int(x) for x in str(formation or "").split("-") if str(x).isdigit()]
+    except Exception:
+        parts = []
+    outfield_needed = 4 if int(side_count or 5) == 5 else 6
+    if sum(parts) != outfield_needed or not parts:
+        # sensible defaults
+        return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
+    # also reject impossible rows (0 etc.)
+    if any(p <= 0 for p in parts):
+        return "1-2-1" if outfield_needed == 4 else "2-1-2-1"
+    return "-".join(str(p) for p in parts)
+
 # ---------- Caching helpers ----------
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_players() -> pd.DataFrame:
@@ -279,6 +294,142 @@ def slot_html(x_pct: float, y_pct: float, name: str, *, motm: bool=False, pill: 
         f"  <div class='name'>{name}</div>"
         f"  {pill}"
         f"</div>"
+    )
+
+def render_match_pitch_combined(a_rows: pd.DataFrame, b_rows: pd.DataFrame,
+                                formation_a: str, formation_b: str,
+                                motm_name: Optional[str],
+                                team_a: str, team_b: str,
+                                show_stats: bool=True):
+    """
+    One premium pitch with both teams:
+      - Team A on LEFT half (attacking → right)
+      - Team B on RIGHT half (attacking → left, mirrored placement)
+      - Real pitch lines, clear GK styling, readable GA pills
+    """
+    css = """
+    <style>
+    .pitchX{position:relative;width:100%;padding-top:150%;border-radius:18px;overflow:hidden;
+      background:
+        radial-gradient(1200px 800px at 50% -35%, #2f7a43 0%, #286a3a 42%, #235f34 100%),
+        repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 14px, rgba(255,255,255,0) 14px 30px);
+      border:1px solid rgba(255,255,255,.16)}
+    .inner{position:absolute;inset:10px;border-radius:14px}
+    .lines{position:absolute;left:4%;top:4%;right:4%;bottom:4%}
+    .outline{position:absolute;inset:0;border:2px solid #ffffff}
+    .halfway-v{position:absolute;left:50%;top:0;bottom:0;width:0;border-left:2px solid #ffffff}
+    .halfway-h{position:absolute;left:0;right:0;top:50%;height:0;border-top:0px solid transparent} /* not used here */
+    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:18%;height:18%;
+      border:2px solid #ffffff;border-radius:999px}
+    .center-dot{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+    /* Penalty boxes & goals left/right */
+    .box-left{position:absolute;left:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-left:none}
+    .six-left{position:absolute;left:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-left:none}
+    .pen-dot-left{position:absolute;left:14%;top:50%;transform:translate(-50%,-50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+    .goal-left{position:absolute;left:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-right:none}
+
+    .box-right{position:absolute;right:0;top:18%;bottom:18%;width:22%;border:2px solid #ffffff;border-right:none}
+    .six-right{position:absolute;right:0;top:33%;bottom:33%;width:10.5%;border:2px solid #ffffff;border-right:none}
+    .pen-dot-right{position:absolute;right:14%;top:50%;transform:translate(50%,-50%);
+      width:6px;height:6px;background:#ffffff;border-radius:999px}
+    .goal-right{position:absolute;right:-1.4%;top:44%;bottom:44%;width:1.4%;border:2px solid #ffffff;border-left:none}
+
+    /* Player layout */
+    .slot{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.36rem;text-align:center}
+    .bubble{
+      width:clamp(54px, 6.4vw, 70px); height:clamp(54px, 6.4vw, 70px);
+      border-radius:999px; display:flex; align-items:center; justify-content:center; position:relative;
+      background:linear-gradient(180deg,#0e1620,#0b131b); border:2px solid #2f4860; box-shadow:0 6px 16px rgba(0,0,0,.35)
+    }
+    .bubble.motm{ border-color:#D4AF37; box-shadow:0 0 0 2px rgba(212,175,55,.22), 0 10px 22px rgba(212,175,55,.16) }
+    .bubble.gk{ background:linear-gradient(180deg,#0c1e2b,#0a1924); border-color:#4db6ff }
+    .chip-gk{
+      position:absolute; right:-6px; top:-6px; padding:.15rem .35rem; font-size:.68rem; font-weight:900;
+      border-radius:8px; background:rgba(77,182,255,.18); color:#bfe6ff; border:1px solid rgba(77,182,255,.45)
+    }
+    .init{font-weight:900;letter-spacing:.3px;color:#e8f4ff;font-size:clamp(.95rem,1.1vw,1.05rem)}
+    .name{font-size:clamp(.88rem,1.05vw,1rem); font-weight:800; color:#F1F6FA; text-shadow:0 1px 0 rgba(0,0,0,.45); max-width:140px}
+
+    /* G/A pill */
+    .pill{display:inline-flex;align-items:center;gap:.6rem; padding:.28rem .65rem; border-radius:999px;
+      background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.18); font-size:clamp(.9rem,1vw,.98rem)}
+    .tag{
+      display:inline-flex;align-items:center;justify-content:center;
+      width:20px;height:20px;border-radius:5px;font-size:.76rem;font-weight:900;border:1px solid rgba(255,255,255,.3)
+    }
+    .tag-g{ color:#D4AF37; background:rgba(212,175,55,.15); border-color:rgba(212,175,55,.55) }
+    .tag-a{ color:#86c7ff; background:rgba(134,199,255,.15); border-color:rgba(134,199,255,.55) }
+    </style>
+    """
+
+    # Sanitize line/slot for each side per their formations
+    a_rows = _ensure_positions(a_rows, formation_a)
+    b_rows = _ensure_positions(b_rows, formation_b)
+    parts_a = formation_to_lines(formation_a) or [1,2,1]
+    parts_b = formation_to_lines(formation_b) or [1,2,1]
+    n_lines = max(len(parts_a), len(parts_b))
+    # We'll place lines using a common vertical grid, centered nicely:
+    y_top_margin = 12
+    y_bot_margin = 12
+    inner_h = 100 - y_top_margin - y_bot_margin
+
+    # x ranges for halves
+    left_min, left_max  = 8, 48   # left half span
+    right_min, right_max = 52, 92 # right half span
+
+    def place_side(rows: pd.DataFrame, parts: List[int], *, left_half: bool):
+        """Yield HTML slot elements for one side."""
+        out = []
+        max_slots = max(parts + [1])
+        # GK at goal center (left/right)
+        gk = rows[rows.get("is_gk")==True]
+        if not gk.empty:
+            r = gk.iloc[0]
+            nm = str(r.get("name") or r.get("player_name") or "")
+            x = (left_min + 2) if left_half else (right_max - 2)
+            y = 50
+            pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
+            out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=True))
+
+        # Outfield rows, top→bottom (defence→attack is visual only)
+        for line_idx, slots in enumerate(parts):
+            y = y_top_margin + inner_h * ((line_idx + 0.5) / len(parts))
+            # columns within the half
+            half_span = (left_max - left_min) if left_half else (right_max - right_min)
+            x0 = left_min if left_half else right_min
+            x_gap = half_span / (slots + 1)
+            line_df = rows[(rows.get("is_gk")!=True) & (rows.get("line")==line_idx)]
+            abs_offset = (max_slots - slots)//2
+            for j in range(slots):
+                abs_slot = abs_offset + j
+                p = line_df[line_df.get("slot")==abs_slot].head(1)
+                if len(p)==0: 
+                    continue
+                r = p.iloc[0]
+                nm = str(r.get("name") or r.get("player_name") or "")
+                x = x0 + (j+1)*x_gap
+                pill = stat_pill(int(r.get("goals") or 0), int(r.get("assists") or 0)) if show_stats else ""
+                out.append(slot_html(x, y, nm, motm=(motm_name==nm), pill=pill, is_gk=False))
+        return out
+
+    html = [css, "<div class='pitchX'><div class='inner'>",
+            "<div class='lines'>"
+            "<div class='outline'></div>"
+            "<div class='halfway-v'></div>"
+            "<div class='center'></div>"
+            "<div class='center-dot'></div>"
+            "<div class='box-left'></div><div class='six-left'></div><div class='pen-dot-left'></div><div class='goal-left'></div>"
+            "<div class='box-right'></div><div class='six-right'></div><div class='pen-dot-right'></div><div class='goal-right'></div>"
+            "</div>"]
+
+    html += place_side(a_rows, parts_a, left_half=True)
+    html += place_side(b_rows, parts_b, left_half=False)
+
+    html.append("</div></div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
     )
 
 
@@ -736,13 +887,18 @@ def page_matches():
         fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
 
     # read-only pitches
-    c1, c2 = st.columns(2)
-    with c1:
-        st.caption(m["team_a"])
-        render_pitch(a_rows, fa, m.get("motm_name"), m["team_a"], show_stats=True, show_photos=show_photos)
-    with c2:
-        st.caption(m["team_b"])
-        render_pitch(b_rows, fb, m.get("motm_name"), m["team_b"], show_stats=True, show_photos=show_photos)
+      # formations (admin picker stays the same above)
+    # Ensure formations match side_count (5s vs 7s) even if DB has older values
+    side_count = int(m.get("side_count") or 5)
+    fa = validate_formation(m.get("formation_a"), side_count)
+    fb = validate_formation(m.get("formation_b"), side_count)
+
+    # Single combined pitch (both teams on one field)
+    st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
+    render_match_pitch_combined(
+        a_rows, b_rows, fa, fb, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
+    )
+
 
     # GA & MOTM editor
     if st.session_state.get("is_admin"):
