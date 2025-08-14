@@ -428,7 +428,7 @@ def _grid_to_line_abs(parts: List[int], x: int, y: int, cols: int = 24):
     return False, line, abs_slot
 
 def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
-    """Render on-pitch drag & drop; returns list of updates (dicts) or None if component missing."""
+    """Render on-pitch drag & drop; returns list of updates (dicts) or [] if no players; None if component missing."""
     if not _PITCH_DND_AVAILABLE:
         return None
 
@@ -460,7 +460,7 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
     def _on_change(updated_layout: List[dict]):
         st.session_state[state_key] = updated_layout
 
-    # Render grid with items
+    # Render grid with items. IMPORTANT: use matching keys for children instead of wrapping with dashboard.Item.
     with elements(f"el_{keypref}_{mid}"):
         with dashboard.Grid(layout, cols=cols, rowHeight=30, preventCollision=True, compact=False, onLayoutChange=_on_change):
             for card_id, r in cards:
@@ -468,23 +468,22 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
                 g = int(r.get("goals") or 0)
                 a = int(r.get("assists") or 0)
 
-                # IMPORTANT: pass the item id string here (not the Item object)
-                with dashboard.Item(card_id):
-                    with mui.Paper(key=f"{card_id}_paper", elevation=4, sx={
-                        "borderRadius": 8, "p": 0.5, "textAlign": "center",
-                        "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
-                    }):
-                        with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
-                            mui.Box(initials(name), sx={
-                                "width": 36, "height": 36, "borderRadius": "999px",
-                                "display": "flex", "alignItems": "center", "justifyContent": "center",
-                                "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
-                            })
-                            mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
-                        if g>0 or a>0:
-                            with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
-                                if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
-                                if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
+                # The key MUST match the layout id (card_id)
+                with mui.Paper(key=card_id, elevation=4, sx={
+                    "borderRadius": 8, "p": 0.5, "textAlign": "center",
+                    "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
+                }):
+                    with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
+                        mui.Box(initials(name), sx={
+                            "width": 36, "height": 36, "borderRadius": "999px",
+                            "display": "flex", "alignItems": "center", "justifyContent": "center",
+                            "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
+                        })
+                        mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
+                    if g>0 or a>0:
+                        with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
+                            if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
+                            if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
 
     # Translate updated grid positions back to DB fields
     updates = []
@@ -496,7 +495,7 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
             pid = str(r["id"])
             lid = f"{keypref}_{pid}"
             if lid in xy:
-                x,y = xy[lid]
+                x, y = xy[lid]
                 is_gk, line, abs_slot = _grid_to_line_abs(parts, x, y, cols=cols)
                 updates.append({
                     "id": pid,
