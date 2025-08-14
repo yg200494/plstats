@@ -1,8 +1,7 @@
-streamlit==1.37.0
+streamlit==1.36.0
 supabase==2.6.0
 pandas==2.2.2
-numpy==1.26.4
 pillow==10.4.0
-pillow-heif==0.17.0
-streamlit-drawable-canvas==0.9.3
-
+pillow-heif==0.16.0 ; platform_system != "Linux"  # Streamlit Cloud often lacks libheif; still harmless locally
+numpy==1.26.4
+python-dateutil==2.9.0.post0
