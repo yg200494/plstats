@@ -707,101 +707,93 @@ def fixtures_admin_table():
 
 # ---------- Page: Matches ----------
 def page_matches():
-    players = fetch_players()
+    # ---- data
     matches = fetch_matches()
     lineups = fetch_lineups()
-    lfact, _ = build_fact(players, matches, lineups)
-
-    st.subheader("Matches")
-
-    # Admin tools
-    if st.session_state.get("is_admin"):
-        with st.expander("Admin: Add / Update Match", expanded=False):
-            add_match_wizard()
-        with st.expander("Admin: All Fixtures (edit dates/scores/formations/MOTM)", expanded=False):
-            fixtures_admin_table()
 
     if matches.empty:
         st.info("No matches yet.")
         return
 
-    # picker
-    seasons = sorted(matches["season"].dropna().unique().tolist())
-    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0, key="m_season")
-    opts = matches[matches["season"]==sel_season].sort_values("gw")
-    labels = opts.apply(
-        lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}",
-        axis=1
-    ).tolist()
-    id_map = {labels[i]: str(opts.iloc[i]["id"]) for i in range(len(opts))}
-    sel_label = st.selectbox("Match", labels, key="m_label")
-    mid = id_map[sel_label]
-    m = matches[matches["id"].astype(str)==mid].iloc[0]
+    # ---- pick match
+    k = "pm"  # key prefix
+    seasons = sorted(matches["season"].dropna().astype(int).unique().tolist())
+    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1, key=f"{k}_season")
 
-    show_photos = st.toggle("Show photos", True, key=f"sp_{mid}")
+    msub = matches[matches["season"] == sel_season].copy().sort_values("gw")
+    labels = msub.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}", axis=1)
+    id_map = {labels.iloc[i]: msub.iloc[i]["id"] for i in range(len(msub))}
+    pick = st.selectbox("Match", list(id_map.keys()), index=len(id_map)-1, key=f"{k}_pick")
+    mid = id_map[pick]
+    m = msub[msub["id"] == mid].iloc[0]
 
-    # banner
-    st.markdown(
-        f"<div class='pl-banner'>"
-        f"<div><div class='pl-title'>Season {int(m['season'])} · GW {int(m['gw'])}</div>"
-        f"<div class='pl-sub'>{m.get('date') or ''}</div></div>"
-        f"<div class='pl-title'>{m['team_a']} {int(m.get('score_a') or 0)} – {int(m.get('score_b') or 0)} {m['team_b']}</div>"
-        f"</div>",
-        unsafe_allow_html=True
-    )
-    if m.get("motm_name"):
-        st.markdown(f"<div class='pl-banner slim'>{motm_badge(m['motm_name'])}</div>", unsafe_allow_html=True)
+    # ---- filter lineups
+    a_rows = lineups[(lineups["match_id"] == mid) & (lineups["team"] == "Non-bibs")].copy()
+    b_rows = lineups[(lineups["match_id"] == mid) & (lineups["team"] == "Bibs")].copy()
 
-    g = lfact[lfact["match_id"]==mid]
-    a_rows = g[g["team"]==m["team_a"]].copy()
-    b_rows = g[g["team"]==m["team_b"]].copy()
+    # ---- header banner
+    lcol, ccol, rcol = st.columns([3,2,3])
+    with lcol:
+        st.markdown(f"### **{m['team_a']}**")
+    with ccol:
+        st.markdown(f"### **{int(m.get('score_a') or 0)} – {int(m.get('score_b') or 0)}**")
+        motm = str(m.get("motm_name") or "")
+        if motm:
+            st.caption(f"⭐ MOTM: **{motm}**")
+    with rcol:
+        st.markdown(f"### **{m['team_b']}**")
 
-   # --- Admin: change formations (picker) ---
-if st.session_state.get("is_admin"):
-    presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
-    presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
+    # ---- admin formation picker (properly indented; unique keys)
+    if st.session_state.get("is_admin"):
+        presets5 = ["1-2-1", "1-3", "2-2", "3-1"]
+        presets7 = ["2-1-2-1", "3-2-1", "2-3-1"]
 
+        side_count = int(m.get("side_count") or 5)
+        options = presets7 if side_count == 7 else presets5
+
+        colf1, colf2, colf3 = st.columns([2, 2, 1])
+        fa = colf1.selectbox(
+            "Formation (Non-bibs)",
+            options,
+            index=(options.index(m.get("formation_a")) if m.get("formation_a") in options else 0),
+            key=f"{k}_fa_{mid}",
+        )
+        fb = colf2.selectbox(
+            "Formation (Bibs)",
+            options,
+            index=(options.index(m.get("formation_b")) if m.get("formation_b") in options else 0),
+            key=f"{k}_fb_{mid}",
+        )
+        if colf3.button("Save formations", key=f"{k}_save_forms_{mid}"):
+            s = service()
+            if not s:
+                st.error("Admin required.")
+            else:
+                fa_s = validate_formation(fa, side_count)
+                fb_s = validate_formation(fb, side_count)
+                s.table("matches").update(
+                    {"formation_a": fa_s, "formation_b": fb_s}
+                ).eq("id", mid).execute()
+                clear_caches()
+                st.success("Formations updated.")
+                st.rerun()
+
+    # ---- render combined pitch (side-oriented & compact)
     side_count = int(m.get("side_count") or 5)
-    preset_list = presets7 if side_count == 7 else presets5
+    fa_render = validate_formation(m.get("formation_a"), side_count)
+    fb_render = validate_formation(m.get("formation_b"), side_count)
 
-    colf1, colf2, colf3 = st.columns([2, 2, 1])
-    fa = colf1.selectbox(
-        "Formation (Non-bibs)",
-        preset_list,
-        index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0),
-        key=f"view_fa_{mid}",
-    )
-    fb = colf2.selectbox(
-        "Formation (Bibs)",
-        preset_list,
-        index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0),
-        key=f"view_fb_{mid}",
+    st.caption(f"{m['team_a']} (left)  vs  {m['team_b']} (right)")
+    render_match_pitch_combined(
+        a_rows, b_rows, fa_render, fb_render, m.get("motm_name"), m["team_a"], m["team_b"], show_stats=True
     )
 
-    if colf3.button("Save formations", key=f"save_forms_{mid}"):
-        s = service()
-        if not s:
-            st.error("Admin required.")
-        else:
-            # validate 5s vs 7s before saving
-            side_count = int(m.get("side_count") or 5)
-            fa_s = validate_formation(fa, side_count)
-            fb_s = validate_formation(fb, side_count)
+    # ---- (optional) lineup editor expander stays below, if you have one:
+    # if st.session_state.get("is_admin"):
+    #     with st.expander("🧲 Arrange lineup", expanded=False):
+    #         upd_a = tap_pitch_editor(a_rows, fa_render, m["team_a"], keypref=f"A_{mid}", mid=mid)
+    #         upd_b = tap_pitch_editor(b_rows, fb_render, m["team_b"], keypref=f"B_{mid}", mid=mid)
 
-            s.table("matches").update({
-                "formation_a": fa_s,
-                "formation_b": fb_s
-            }).eq("id", mid).execute()
-
-            clear_caches()
-            st.success("Formations updated.")
-            st.rerun()
-
-
-
-    else:
-        fa = m.get("formation_a") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
-        fb = m.get("formation_b") or ("2-1-2-1" if int(m.get("side_count") or 5)==7 else "1-2-1")
 
     # read-only pitches
       # formations (admin picker stays the same above)
