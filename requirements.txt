@@ -5,4 +5,5 @@ numpy>=1.26.0
 pillow>=10.3.0
 pillow-heif>=0.16.0
 python-dateutil>=2.9.0
+streamlit-elements
 streamlit-sortables
