@@ -1,6 +1,7 @@
-# app.py — Powerleague Stats (Final)
+# app.py — Powerleague Stats (Drag & Drop Final)
 # - Pitch: centered, FotMob-style, team-colored rings, modern chips, MOTM star
 # - Matches: dropdown selector, add/update matches (past & future), inline G/A + MOTM editor
+# - Drag & Drop lineup editor (GK + per-slot containers) -> saves is_gk/line/slot
 # - Stats: dropdown metrics (incl. duos/nemesis) + Season/Min Games/Last N/Top N filters
 # - Player Profile: hero, cards, streaks, last-N, duos & nemesis
 # - Player Manager: add/edit/rename player, upload JPG/PNG/HEIC -> square PNG to Supabase Storage
@@ -20,9 +21,15 @@ from supabase import create_client, Client
 from PIL import Image
 import pillow_heif
 
-# -----------------------------
+# Enable HEIC support via Pillow
+try:
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
+# ---------------------------------
 # App config + CSS
-# -----------------------------
+# ---------------------------------
 st.set_page_config(page_title="Powerleague Stats", page_icon="⚽", layout="wide", initial_sidebar_state="collapsed")
 
 def load_css():
@@ -34,9 +41,9 @@ def load_css():
 
 load_css()
 
-# -----------------------------
+# ---------------------------------
 # Secrets & Supabase clients
-# -----------------------------
+# ---------------------------------
 REQ = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "ADMIN_PASSWORD", "AVATAR_BUCKET"]
 missing = [k for k in REQ if k not in st.secrets]
 if missing:
@@ -56,9 +63,9 @@ def service() -> Optional[Client]:
         return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     return None
 
-# -----------------------------
+# ---------------------------------
 # Cached reads
-# -----------------------------
+# ---------------------------------
 @st.cache_data(ttl=20)
 def fetch_players() -> pd.DataFrame:
     data = sb_public.table("players").select("*").execute().data or []
@@ -90,9 +97,9 @@ def fetch_awards() -> pd.DataFrame:
 def clear_caches():
     fetch_players.clear(); fetch_matches.clear(); fetch_lineups.clear(); fetch_awards.clear()
 
-# -----------------------------
+# ---------------------------------
 # Helpers
-# -----------------------------
+# ---------------------------------
 TEAM_COLORS = {"Non-bibs": "#2f7ef0", "Bibs": "#ff8a1c"}
 
 def initials(name: str) -> str:
@@ -239,9 +246,9 @@ def compute_streak(series_vals, predicate):
         else: break
     return count
 
-# -----------------------------
+# ---------------------------------
 # Pitch rendering
-# -----------------------------
+# ---------------------------------
 def _pitch_svg() -> str:
     return """
     <svg viewBox="0 0 100 150" preserveAspectRatio="none">
@@ -356,9 +363,111 @@ def render_pitch(team_df: pd.DataFrame, formation: str, motm_name: Optional[str]
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
 
-# -----------------------------
+# ---------------------------------
+# Drag & Drop support (optional)
+# ---------------------------------
+try:
+    from streamlit_sortables import sort_items as _sort_items
+    _DND_AVAILABLE = True
+except Exception:
+    _DND_AVAILABLE = False
+
+def _encode_item(row: pd.Series) -> str:
+    return f"{row['id']}|{row.get('name') or row.get('player_name') or ''}"
+
+def _decode_item(token: str) -> tuple[str, str]:
+    pid, name = token.split("|", 1)
+    return pid, name
+
+def _containers_from_team_rows(team_rows: pd.DataFrame, formation: str, keyprefix: str):
+    rows = _ensure_positions(team_rows, formation)
+    parts = formation_to_lines(formation)
+    max_slots = max(parts+[1])
+
+    gk_items, non_gk = [], []
+    for _, r in rows.iterrows():
+        if bool(r.get("is_gk")): gk_items.append(_encode_item(r))
+        else: non_gk.append(r)
+
+    containers = []
+    containers.append({"header": "GK", "items": gk_items[:1]})
+
+    placed_ids = set()
+    for i, slots in enumerate(parts):
+        offset = (max_slots - slots)//2
+        rel_to_abs = [offset + j for j in range(slots)]
+        for j, abs_slot in enumerate(rel_to_abs):
+            header = f"R{i+1} S{j+1}"
+            items = []
+            for r in non_gk:
+                if int(r.get("line") or -1) == i and int(r.get("slot") or -999) == abs_slot:
+                    items.append(_encode_item(r)); placed_ids.add(r["id"])
+            containers.append({"header": header, "items": items})
+
+    bench_items = []
+    if len(gk_items) > 1:
+        bench_items.extend(gk_items[1:])
+    for _, r in rows.iterrows():
+        tok = _encode_item(r)
+        if (r["id"] not in placed_ids) and (tok not in bench_items) and (not bool(r.get("is_gk"))):
+            bench_items.append(tok)
+    containers.append({"header":"Bench","items":bench_items})
+    return containers
+
+def _apply_dnd_result(containers: list[dict], formation: str) -> list[dict]:
+    parts = formation_to_lines(formation)
+    max_slots = max(parts+[1])
+
+    updates = []
+
+    def header_to_pos(h: str) -> tuple[int|None, int|None]:
+        if h == "GK": return None, None
+        if not h.startswith("R"): return None, None
+        try:
+            row_txt, slot_txt = h.split()
+            row_i = int(row_txt[1:]) - 1
+            rel_j = int(slot_txt[1:]) - 1
+            slots = parts[row_i]; offset = (max_slots - slots)//2
+            return row_i, offset + rel_j
+        except Exception:
+            return None, None
+
+    gk_set = set()
+    for c in containers:
+        if c["header"] == "GK":
+            if c["items"]:
+                pid, _ = _decode_item(c["items"][0])
+                updates.append({"id": pid, "is_gk": True, "line": None, "slot": None})
+                gk_set.add(pid)
+
+    for c in containers:
+        h = c["header"]
+        if h in ("GK","Bench"): continue
+        line, abs_slot = header_to_pos(h)
+        for tok in c["items"]:
+            pid, _ = _decode_item(tok)
+            updates.append({"id": pid, "is_gk": False, "line": int(line), "slot": int(abs_slot)})
+
+    seen = {}
+    for u in updates:
+        seen[u["id"]] = u
+    return list(seen.values())
+
+def dnd_lineup_editor(team_rows: pd.DataFrame, formation: str, team_label: str, keypref: str, mid: str):
+    if not _DND_AVAILABLE:
+        st.info("Install `streamlit-sortables` to enable drag & drop. Falling back to manual editing.")
+        return None
+    containers = _containers_from_team_rows(team_rows, formation, keypref)
+    st.caption(f"Drag players into **GK** or any slot (formation {formation}).")
+    out = _sort_items(containers, multi_containers=True, key=f"{keypref}_{mid}")
+    bench = next((c for c in out if c["header"]=="Bench"), {"items":[]})
+    if bench["items"]:
+        st.warning("Players in **Bench** keep their previous positions unless you assign them to a slot.")
+    return _apply_dnd_result(out, formation)
+
+# ---------------------------------
 # Admin/auth header
-# -----------------------------
+# ---------------------------------
 def header():
     left, right = st.columns([1,1])
     with left: st.title("⚽ Powerleague Stats")
@@ -367,36 +476,36 @@ def header():
             st.session_state["is_admin"] = False
         if st.session_state["is_admin"]:
             st.success("Admin mode", icon="🔐")
-            if st.button("Logout"): st.session_state["is_admin"] = False; st.rerun()
+            if st.button("Logout", key="btn_logout"): st.session_state["is_admin"] = False; st.rerun()
         else:
-            with st.popover("Admin login"):
+            with st.popover("Admin login", key="pop_admin"):
                 pw = st.text_input("Password", type="password", key="admin_pw")
                 if st.button("Login", key="admin_login"):
                     if pw == ADMIN_PASSWORD: st.session_state["is_admin"] = True; st.rerun()
                     else: st.error("Invalid password")
 
-# -----------------------------
+# ---------------------------------
 # Matches Page
-# -----------------------------
+# ---------------------------------
 def add_match_wizard():
     st.markdown("### ➕ Add / Update Match")
     with st.form("add_match"):
         c1,c2,c3 = st.columns(3)
-        season = int(c1.number_input("Season", min_value=1, value=1))
-        gw = int(c2.number_input("Gameweek", min_value=1, value=1))
-        date = c3.date_input("Date", value=dt.date.today())
-        side_count = st.selectbox("Side count", [5,7], index=0)
+        season = int(c1.number_input("Season", min_value=1, value=1, key="am_season"))
+        gw = int(c2.number_input("Gameweek", min_value=1, value=1, key="am_gw"))
+        date = c3.date_input("Date", value=dt.date.today(), key="am_date")
+        side_count = st.selectbox("Side count", [5,7], index=0, key="am_side")
         team_a, team_b = "Non-bibs", "Bibs"
         sc1, sc2 = st.columns(2)
-        score_a = int(sc1.number_input(f"{team_a} goals", min_value=0, value=0))
-        score_b = int(sc2.number_input(f"{team_b} goals", min_value=0, value=0))
-        motm_name = st.text_input("Man of the Match (optional)")
+        score_a = int(sc1.number_input(f"{team_a} goals", min_value=0, value=0, key="am_sa"))
+        score_b = int(sc2.number_input(f"{team_b} goals", min_value=0, value=0, key="am_sb"))
+        motm_name = st.text_input("Man of the Match (optional)", key="am_motm")
         presets5 = ["1-2-1","1-3","2-2","3-1"]; presets7 = ["2-1-2-1","3-2-1","2-3-1"]
         fa, fb = st.columns(2)
-        form_a = fa.selectbox("Formation (Non-bibs)", presets7 if side_count==7 else presets5, index=0)
-        form_b = fb.selectbox("Formation (Bibs)", presets7 if side_count==7 else presets5, index=0)
-        notes = st.text_area("Notes", "")
-        submit = st.form_submit_button("Save match")
+        form_a = fa.selectbox("Formation (Non-bibs)", presets7 if side_count==7 else presets5, index=0, key="am_fa")
+        form_b = fb.selectbox("Formation (Bibs)", presets7 if side_count==7 else presets5, index=0, key="am_fb")
+        notes = st.text_area("Notes", key="am_notes")
+        submit = st.form_submit_button("Save match", type="primary")
         if submit:
             s = service()
             if not s: st.error("Admin required.")
@@ -423,7 +532,7 @@ def fixtures_admin_table():
         return
     presets = ["1-2-1","1-3","2-2","3-1","2-1-2-1","3-2-1","2-3-1"]
     for _, m in matches.sort_values(["season","gw"]).iterrows():
-        with st.expander(f"S{int(m['season'])} GW{int(m['gw'])} — {m['team_a']} {int(m['score_a'] or 0)}–{int(m['score_b'] or 0)} {m['team_b']}"):
+        with st.expander(f"S{int(m['season'])} GW{int(m['gw'])} — {m['team_a']} {int(m['score_a'] or 0)}–{int(m['score_b'] or 0)} {m['team_b']}", expanded=False):
             d1,d2,d3,d4 = st.columns([2,2,1,1])
             date = d1.date_input("Date", value=pd.to_datetime(m["date"]).date() if pd.notna(m["date"]) else dt.date.today(), key=f"dt_{m['id']}")
             sa = int(d2.number_input("Score A", min_value=0, value=int(m.get("score_a") or 0), key=f"sa_{m['id']}"))
@@ -456,11 +565,11 @@ def page_matches():
         st.info("No matches yet."); return
 
     seasons = sorted(matches["season"].dropna().unique().tolist())
-    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0)
+    sel_season = st.selectbox("Season", seasons, index=len(seasons)-1 if seasons else 0, key="m_season")
     opts = matches[matches["season"]==sel_season].sort_values("gw")
     labels = opts.apply(lambda r: f"GW {int(r['gw'])} — {r['team_a']} {int(r.get('score_a') or 0)}–{int(r.get('score_b') or 0)} {r['team_b']}", axis=1).tolist()
     id_map = {labels[i]: str(opts.iloc[i]["id"]) for i in range(len(opts))}
-    sel_label = st.selectbox("Match", labels)
+    sel_label = st.selectbox("Match", labels, key="m_label")
     mid = id_map[sel_label]
 
     m = matches[matches["id"].astype(str)==mid].iloc[0]
@@ -487,7 +596,7 @@ def page_matches():
         colf1, colf2, colf3 = st.columns([2,2,1])
         fa = colf1.selectbox("Formation (Non-bibs)", preset_list, index=(preset_list.index(m.get("formation_a")) if m.get("formation_a") in preset_list else 0), key=f"view_fa_{mid}")
         fb = colf2.selectbox("Formation (Bibs)", preset_list, index=(preset_list.index(m.get("formation_b")) if m.get("formation_b") in preset_list else 0), key=f"view_fb_{mid}")
-        if colf3.button("Save formations"):
+        if colf3.button("Save formations", key=f"save_forms_{mid}"):
             s = service()
             if not s: st.error("Admin required.")
             else:
@@ -542,21 +651,42 @@ def page_matches():
                         s.table("lineups").update({"goals": g_in, "assists": a_in}).eq("id", r["id"]).execute()
                         clear_caches(); st.success(f"Saved {r['name']}"); st.rerun()
 
-# -----------------------------
+        # Drag & Drop positions (per team)
+        with st.expander("🧲 Drag & drop lineup (beta)", expanded=False):
+            s = service()
+            if not s:
+                st.info("Login as admin.")
+            else:
+                updates = []
+                colA, colB = st.columns(2)
+                with colA:
+                    st.markdown(f"**{m['team_a']}**")
+                    upd_a = dnd_lineup_editor(a_rows, fa, m["team_a"], keypref=f"dndA", mid=mid)
+                    if upd_a: updates.extend(upd_a)
+                with colB:
+                    st.markdown(f"**{m['team_b']}**")
+                    upd_b = dnd_lineup_editor(b_rows, fb, m["team_b"], keypref=f"dndB", mid=mid)
+                    if upd_b: updates.extend(upd_b)
+
+                if updates and st.button("💾 Save all positions", type="primary", key=f"save_dnd_{mid}"):
+                    try:
+                        CHUNK = 20
+                        for i in range(0, len(updates), CHUNK):
+                            s.table("lineups").upsert(updates[i:i+CHUNK], on_conflict="id").execute()
+                        clear_caches()
+                        st.success("Positions saved."); st.rerun()
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+
+# ---------------------------------
 # Player Manager (Add/Edit + Photo upload)
-# -----------------------------
+# ---------------------------------
 def process_avatar_to_png_square(file) -> bytes:
     """Read uploaded image (JPG/PNG/HEIC) and return square PNG bytes (512x512)."""
     data = file.read()
-    name = (file.name or "").lower()
-    if name.endswith(".heic") or "heic" in (file.type or "").lower():
-        heif = pillow_heif.read_heif(io.BytesIO(data))
-        img = Image.frombytes(heif.mode, heif.size, heif.data, "raw")
-    else:
-        img = Image.open(io.BytesIO(data))
-        if img.mode in ("P", "RGBA"):  # unify
-            img = img.convert("RGB")
-    # center-crop square
+    img = Image.open(io.BytesIO(data))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
     w,h = img.size
     m = min(w,h)
     left = (w-m)//2; top = (h-m)//2
@@ -566,12 +696,10 @@ def process_avatar_to_png_square(file) -> bytes:
     return out.getvalue()
 
 def upload_avatar_png(player_id: str, png_bytes: bytes) -> str:
-    """Upload to Supabase Storage avatars bucket and return public URL."""
     s = service()
     if not s: raise RuntimeError("Admin required to upload photos.")
     path = f"players/{player_id}.png"
     s.storage.from_(AVATAR_BUCKET).upload(path, png_bytes, {"content-type": "image/png", "x-upsert": "true"})
-    # get public url
     url = s.storage.from_(AVATAR_BUCKET).get_public_url(path)
     return url
 
@@ -587,21 +715,21 @@ def page_player_manager():
     tab1, tab2 = st.tabs(["Edit Existing", "Add New"])
     with tab1:
         if players.empty:
-            st.info("No players yet."); 
+            st.info("No players yet.")
         else:
-            sel = st.selectbox("Select player", players["name"].tolist())
+            sel = st.selectbox("Select player", players["name"].tolist(), key="pm_sel")
             prow = players[players["name"]==sel].iloc[0]
-            new_name = st.text_input("Name", value=prow["name"])
-            notes = st.text_area("Notes", value=prow.get("notes") or "")
-            up = st.file_uploader("Upload photo (JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key=f"edit_upload_{prow['id']}")
+            new_name = st.text_input("Name", value=prow["name"], key=f"pm_name_{prow['id']}")
+            notes = st.text_area("Notes", value=prow.get("notes") or "", key=f"pm_notes_{prow['id']}")
+            up = st.file_uploader("Upload photo (JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key=f"pm_upload_{prow['id']}")
             colb1, colb2, colb3 = st.columns([1,1,1])
-            if colb1.button("Save", type="primary", key=f"save_player_{prow['id']}"):
+            if colb1.button("Save", type="primary", key=f"pm_save_{prow['id']}"):
                 if not s: st.error("Admin required.")
                 else:
                     update = {"name": new_name, "notes": (notes or None)}
                     s.table("players").update(update).eq("id", prow["id"]).execute()
                     clear_caches(); st.success("Player updated."); st.rerun()
-            if up is not None and colb2.button("Save photo", key=f"save_photo_{prow['id']}"):
+            if up is not None and colb2.button("Save photo", key=f"pm_save_photo_{prow['id']}"):
                 try:
                     png = process_avatar_to_png_square(up)
                     url = upload_avatar_png(prow["id"], png)
@@ -609,20 +737,19 @@ def page_player_manager():
                     clear_caches(); st.success("Photo updated."); st.rerun()
                 except Exception as e:
                     st.error(f"Upload failed: {e}")
-            if colb3.button("Delete player", type="secondary", key=f"del_{prow['id']}"):
+            if colb3.button("Delete player", type="secondary", key=f"pm_del_{prow['id']}"):
                 s.table("players").delete().eq("id", prow["id"]).execute()
                 clear_caches(); st.success("Deleted."); st.rerun()
 
     with tab2:
-        nm = st.text_input("Name (unique)")
-        nt = st.text_area("Notes")
-        up2 = st.file_uploader("Upload photo (optional, JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key="new_upload")
-        if st.button("Add player", type="primary"):
+        nm = st.text_input("Name (unique)", key="pm_new_name")
+        nt = st.text_area("Notes", key="pm_new_notes")
+        up2 = st.file_uploader("Upload photo (optional, JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","heif"], key="pm_new_upload")
+        if st.button("Add player", type="primary", key="pm_new_add"):
             if not s: st.error("Admin required.")
             elif not nm.strip():
                 st.error("Name is required.")
             else:
-                # create player
                 res = s.table("players").insert({"name": nm.strip(), "notes": (nt or None)}).execute()
                 new = pd.DataFrame(res.data)
                 if not new.empty:
@@ -636,23 +763,22 @@ def page_player_manager():
                             st.error(f"Photo upload failed: {e}")
                 clear_caches(); st.success("Player added."); st.rerun()
 
-# -----------------------------
+# ---------------------------------
 # Players (profile)
-# -----------------------------
+# ---------------------------------
 def page_players():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups(); awards = fetch_awards()
     lfact, _ = build_fact(players, matches, lineups)
 
     st.subheader("Players")
     names = sorted(players["name"].dropna().astype(str).unique().tolist())
-    sel = st.selectbox("Select player", [None]+names, index=0)
+    sel = st.selectbox("Select player", [None]+names, index=0, key="pp_sel")
     if not sel: st.info("Choose a player"); return
 
     prow = players[players["name"]==sel]
     p = prow.iloc[0].to_dict() if not prow.empty else {"id":None,"name":sel,"photo_url":None,"notes":None}
     mine = lfact[lfact["name"]==sel].copy().sort_values(["season","gw"])
 
-    # Hero + cards
     c1, c2 = st.columns([1,2])
     with c1:
         if p.get("photo_url"):
@@ -681,7 +807,6 @@ def page_players():
         ]
         st.markdown("<div class='pl-cards'>"+ "".join([f"<div class='pl-card'><div class='pl-card-val'>{v}</div><div class='pl-card-lbl'>{k}</div></div>" for k,v in cards]) +"</div>", unsafe_allow_html=True)
 
-    # Streaks
     if not mine.empty:
         mine_ord = mine.sort_values(["season","gw"])
         res_streak = compute_streak(mine_ord["result"].tolist(), lambda r: r=="W")
@@ -696,7 +821,7 @@ def page_players():
         ]) +"</div>", unsafe_allow_html=True)
 
     st.markdown("### Match Log")
-    last_n = int(st.number_input("Show last N games (0 = all)", min_value=0, value=5, step=1, key="pl_lastN"))
+    last_n = int(st.number_input("Show last N games (0 = all)", min_value=0, value=5, step=1, key="pp_lastN"))
     mine2 = mine.sort_values(["season","gw"], ascending=[False,False])
     if last_n>0: mine2 = mine2.head(last_n)
     cols = ["season","gw","team_a","score_a","score_b","team_b","team","goals","assists","ga","result"]
@@ -707,9 +832,9 @@ def page_players():
     st.dataframe(mine2, use_container_width=True, hide_index=True)
 
     st.markdown("### Duos & Nemesis")
-    mg = int(st.number_input("Min games together/against", min_value=1, value=3, step=1, key="pl_min_gp"))
-    last_x = int(st.number_input("Last N GWs (0 = all)", min_value=0, value=0, step=1, key="pl_lastX"))
-    # Duos for this player
+    mg = int(st.number_input("Min games together/against", min_value=1, value=3, step=1, key="pp_min_gp"))
+    last_x = int(st.number_input("Last N GWs (0 = all)", min_value=0, value=0, step=1, key="pp_lastX"))
+
     filt_me = df_filter_by(lfact[lfact["name"]==sel], None, last_x)
     a = filt_me.merge(lfact, on=["match_id","team"], suffixes=("_me","_tm"))
     a = a[a["name_tm"]!=sel]
@@ -723,7 +848,7 @@ def page_players():
         st.dataframe(duo_df, use_container_width=True, hide_index=True)
     else:
         st.caption("No duo data yet.")
-    # Nemesis for this player
+
     b = filt_me.merge(lfact, on=["match_id"], suffixes=("_me","_op"))
     b = b[b["team_me"]!=b["team_op"]]
     b = b[b["name_op"]!=sel]
@@ -738,9 +863,9 @@ def page_players():
     else:
         st.caption("No nemesis data yet.")
 
-# -----------------------------
+# ---------------------------------
 # Stats
-# -----------------------------
+# ---------------------------------
 def page_stats():
     players = fetch_players(); matches = fetch_matches(); lineups = fetch_lineups(); awards = fetch_awards()
     lfact, _ = build_fact(players, matches, lineups)
@@ -748,15 +873,15 @@ def page_stats():
 
     c1,c2,c3,c4 = st.columns(4)
     seasons = sorted(matches["season"].dropna().unique().tolist()) if not matches.empty else []
-    season = c1.selectbox("Season", [None]+seasons, index=0)
-    min_games = int(c2.number_input("Min games", min_value=0, value=0, step=1))
-    last_x = int(c3.number_input("Last N GWs (0 = all)", min_value=0, value=0, step=1))
-    top_n = int(c4.number_input("Rows (Top N, 0=all)", min_value=0, value=10, step=1))
+    season = c1.selectbox("Season", [None]+seasons, index=0, key="st_season")
+    min_games = int(c2.number_input("Min games", min_value=0, value=0, step=1, key="st_mingp"))
+    last_x = int(c3.number_input("Last N GWs (0 = all)", min_value=0, value=0, step=1, key="st_lastx"))
+    top_n = int(c4.number_input("Rows (Top N, 0=all)", min_value=0, value=10, step=1, key="st_topn"))
 
     metric = st.selectbox(
         "Metric",
         ["G+A","Goals","Assists","Goals per Game","Assists per Game","G+A per Game","Win %","Team Contribution %","MOTM","Best Duos","Nemesis Pairs"],
-        index=0
+        index=0, key="st_metric"
     )
 
     agg = player_agg(lfact, season=season, min_games=min_games, last_gw=last_x)
@@ -812,21 +937,21 @@ def page_stats():
         if top_n>0: df = df.head(top_n)
         st.dataframe(df.rename(columns={"pair":"Pair","gp":"GP","w_vs":"W","d_vs":"D","l_vs":"L","win_pct_vs":"Win % vs"}), use_container_width=True, hide_index=True)
 
-# -----------------------------
+# ---------------------------------
 # Awards
-# -----------------------------
+# ---------------------------------
 def page_awards():
     aw = fetch_awards()
     st.subheader("Awards")
     if st.session_state.get("is_admin"):
         with st.form("add_award"):
-            atype = st.selectbox("Type", ["MOTM","POTM"])
-            season = st.number_input("Season", min_value=1, value=1, step=1)
-            gw = st.number_input("GW (for MOTM)", min_value=1, value=1, step=1)
-            month = st.number_input("Month (1-12 for POTM)", min_value=1, max_value=12, value=1, step=1)
-            player_name = st.text_input("Player name")
-            notes = st.text_input("Notes")
-            if st.form_submit_button("Add"):
+            atype = st.selectbox("Type", ["MOTM","POTM"], key="aw_type")
+            season = st.number_input("Season", min_value=1, value=1, step=1, key="aw_season")
+            gw = st.number_input("GW (for MOTM)", min_value=1, value=1, step=1, key="aw_gw")
+            month = st.number_input("Month (1-12 for POTM)", min_value=1, max_value=12, value=1, step=1, key="aw_month")
+            player_name = st.text_input("Player name", key="aw_player")
+            notes = st.text_input("Notes", key="aw_notes")
+            if st.form_submit_button("Add", type="primary"):
                 s = service()
                 if not s: st.error("Admin required.")
                 else:
@@ -854,11 +979,10 @@ def page_awards():
         for _, r in motm.sort_values(["season","gw"]).iterrows():
             st.write(f"🎖️ S{int(r['season'])} GW{int(r['gw'])}: {r.get('player_name','')}")
 
-# -----------------------------
+# ---------------------------------
 # Router
-# -----------------------------
+# ---------------------------------
 def run_app():
-    # Header + auth
     header()
 
     Page = getattr(st, "Page", None); nav = getattr(st, "navigation", None)
@@ -880,7 +1004,7 @@ def run_app():
         ]}
         n = nav(sections); n.run()
     else:
-        sel = st.sidebar.radio("Go to", list(pages.keys()), index=0)
+        sel = st.sidebar.radio("Go to", list(pages.keys()), index=0, key="router_radio")
         pages[sel]()
 
 if __name__ == "__main__":
