@@ -434,66 +434,76 @@ def dnd_pitch_editor(team_rows: pd.DataFrame, formation: str, team_label: str, k
 
     parts = formation_to_lines(formation)
     rows = _ensure_positions(team_rows, formation)
-    cols = 24
+    if rows.empty:
+        st.caption("No players found for this side.")
+        return []
+
+    cols = 24  # horizontal grid resolution
     layout = []
-    card_keys = []
-    # Create layout items for each player
+    cards = []
+
+    # Build a layout item per player + remember its data
     for _, r in rows.iterrows():
         pid = str(r["id"])
-        line = None if bool(r.get("is_gk")) else int(r.get("line"))
-        slot_abs = None if bool(r.get("is_gk")) else int(r.get("slot"))
+        is_gk = bool(r.get("is_gk"))
+        line = None if is_gk else int(r.get("line"))
+        slot_abs = None if is_gk else int(r.get("slot"))
         gx, gy = _line_abs_to_grid(parts, line, slot_abs, cols=cols)
-        # Each item gets width=2 grid cells to make grabbing easier on mobile
-        layout.append(dashboard.Item(f"{keypref}_{pid}", gx, gy, 2, 2, isResizable=False))
-        card_keys.append((pid, r))
 
-    # Callback to store updated layout into session state
+        # Wider items = easier to grab on mobile
+        item = dashboard.Item(i=f"{keypref}_{pid}", x=int(gx), y=int(gy), w=4, h=3, isResizable=False)
+        layout.append(item)
+        cards.append((item, r))
+
+    # Remember layout changes
     state_key = f"layout_{keypref}_{mid}"
     def _on_change(updated_layout: List[dict]):
         st.session_state[state_key] = updated_layout
 
-    # Render dashboard with player chips
+    # Render grid with items
     with elements(f"el_{keypref}_{mid}"):
-        with dashboard.Grid(layout, cols=cols, rowHeight=22, preventCollision=True, compact=False, onLayoutChange=_on_change):
-            for pid, r in card_keys:
+        with dashboard.Grid(layout, cols=cols, rowHeight=30, preventCollision=True, compact=False, onLayoutChange=_on_change):
+            for item, r in cards:
+                pid = str(r["id"])
                 name = r.get("name") or r.get("player_name") or ""
-                g = int(r.get("goals") or 0); a = int(r.get("assists") or 0)
-                # a neat, high-contrast chip
-                with mui.Paper(key=f"{keypref}_{pid}", elevation=4, sx={
-                    "borderRadius": 8, "p": 0.5, "textAlign": "center",
-                    "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
-                }):
-                    with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
-                        # Initials bubble (consistent size)
-                        init = initials(name)
-                        mui.Box(init, sx={
-                            "width": 36, "height": 36, "borderRadius": "999px",
-                            "display": "flex", "alignItems": "center", "justifyContent": "center",
-                            "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
-                        })
-                        mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
-                    if g>0 or a>0:
-                        with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
-                            if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
-                            if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
+                g = int(r.get("goals") or 0)
+                a = int(r.get("assists") or 0)
 
-    # If we have updated layout in state, translate back to DB updates
+                # Each draggable chip MUST be wrapped in dashboard.Item(...)
+                with dashboard.Item(item):
+                    with mui.Paper(key=f"{keypref}_{pid}", elevation=4, sx={
+                        "borderRadius": 8, "p": 0.5, "textAlign": "center",
+                        "backgroundColor": "#0f231b", "border": "1px solid #1b3b2d", "color": "#dff7ec"
+                    }):
+                        with mui.Box(sx={"display":"flex","gap":0.8,"alignItems":"center","justifyContent":"center"}):
+                            mui.Box(initials(name), sx={
+                                "width": 36, "height": 36, "borderRadius": "999px",
+                                "display": "flex", "alignItems": "center", "justifyContent": "center",
+                                "fontWeight": 800, "backgroundColor": "#133f2c", "border": "2px solid #d0eadc"
+                            })
+                            mui.Typography(name, sx={"fontWeight": 800, "fontSize": ".9rem"})
+                        if g>0 or a>0:
+                            with mui.Box(sx={"display":"flex","gap":0.5,"justifyContent":"center","mt":0.5}):
+                                if g>0: mui.Chip(label=f"⚽ {g}", size="small", sx={"background":"#e6fff0"})
+                                if a>0: mui.Chip(label=f"🅰 {a}", size="small", sx={"background":"#e6f0ff"})
+
+    # Translate updated grid positions back to DB fields
     updates = []
-    if state_key in st.session_state:
-        updated = st.session_state[state_key]
-        # Map from layout id -> (x,y)
-        locs: Dict[str, Tuple[int,int]] = {item["i"]: (item["x"], item["y"]) for item in updated}
+    lay = st.session_state.get(state_key)
+    if lay:
+        # map id -> (x,y)
+        xy = {it["i"]: (int(it["x"]), int(it["y"])) for it in lay}
         for _, r in rows.iterrows():
             pid = str(r["id"])
             lid = f"{keypref}_{pid}"
-            if lid in locs:
-                x,y = locs[lid]
+            if lid in xy:
+                x,y = xy[lid]
                 is_gk, line, abs_slot = _grid_to_line_abs(parts, x, y, cols=cols)
                 updates.append({
                     "id": pid,
                     "is_gk": bool(is_gk),
                     "line": (None if is_gk else int(line)),
-                    "slot": (None if is_gk else int(abs_slot))
+                    "slot": (None if is_gk else int(abs_slot)),
                 })
     return updates
 
