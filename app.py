@@ -20,6 +20,50 @@ except Exception:
     HEIF_OK = False
 
 from streamlit.components.v1 import html as html_component
+# --- Supabase Storage helpers (robust across supabase-py variants) ---
+def _storage_upload_png(bytes_data: bytes, key: str) -> str:
+    """Uploads PNG bytes to Supabase Storage and returns a public URL."""
+    storage = _service().storage.from_(AVATAR_BUCKET)
+    # Try both signatures (v1 vs v2 of supabase-py)
+    try:
+        # supabase-py v1 style
+        storage.upload(key, bytes_data, {"content-type":"image/png", "x-upsert":"true"})
+    except TypeError:
+        # supabase-py v2 style
+        storage.upload(path=key, file=bytes_data, file_options={"contentType":"image/png", "upsert":"true"})
+    # Get public URL (string in v2, dict in older SDK)
+    pub = storage.get_public_url(key)
+    if isinstance(pub, dict) and "publicUrl" in pub:
+        return pub["publicUrl"]
+    return str(pub)
+
+def _png_from_uploaded_file(upfile) -> Image.Image | None:
+    """Returns a PIL Image (RGB) from an uploaded file (supports HEIC if pillow-heif available)."""
+    try:
+        name = (upfile.name or "").lower()
+        ext = name.split(".")[-1] if "." in name else ""
+        if ext in ("heic", "HEIC"):
+            if _HEIC:
+                heif = pillow_heif.read_heif(upfile.read())  # type: ignore
+                return Image.frombytes(heif.mode, heif.size, heif.data, "raw").convert("RGB")
+            else:
+                st.error("HEIC not supported on this host. Please upload JPG or PNG.")
+                return None
+        # JPG/PNG
+        img = Image.open(upfile).convert("RGB")
+        return img
+    except Exception as e:
+        st.error(f"Image read failed: {e}")
+        return None
+
+def _square_thumbnail(img: Image.Image, size: int = 384) -> Image.Image:
+    """Center-crop to square then resize for consistent avatar quality."""
+    w, h = img.size
+    side = min(w, h)
+    left = (w - side)//2
+    top = (h - side)//2
+    img = img.crop((left, top, left+side, top+side))
+    return img.resize((size, size))
 
 # -----------------------------------------------------------------------------
 # App config
@@ -1009,52 +1053,138 @@ def page_awards():
 # -----------------------------------------------------------------------------
 # Player Manager
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Player Manager (admin only) — REPLACE WHOLE FUNCTION
+# -----------------------------------------------------------------------------
 def page_player_manager():
     st.markdown("### Player Manager")
     if not st.session_state.get("is_admin"):
         st.info("Admin required.")
         return
 
+    heic_supported = bool(globals().get("_HEIC", False))
     pl = fetch_players()
 
+    # ---------- Create player ----------
     with st.expander("Add player", expanded=False):
-        c1,c2 = st.columns([2,1])
-        name_new = c1.text_input("Name", key="pm_name_new")
-        photo = c2.file_uploader("Avatar (JPG/PNG or HEIC*)", type=["heic","heif","jpg","jpeg","png"], key="pm_photo_up")
-        if not HEIF_OK:
-            st.caption("(* HEIC conversion not supported on this server – please upload JPG/PNG.)")
-        notes_new = st.text_area("Notes", key="pm_notes_new")
-        if st.button("Create player", key="pm_create"):
-            if not name_new.strip():
+        with st.form("pm_add_form", clear_on_submit=True):
+            c1, c2 = st.columns([2, 1])
+            name_new = c1.text_input("Name", key="pm_name_new")
+            up = c2.file_uploader("Avatar (JPG/PNG/HEIC)", type=["jpg","jpeg","png","heic","HEIC"], key="pm_photo_up")
+            if not heic_supported:
+                st.caption("HEIC conversion not supported on this host — please upload JPG/PNG.")
+            notes_new = st.text_area("Notes", key="pm_notes_new")
+            submitted = st.form_submit_button("Create player")
+
+        if submitted:
+            name_clean = (name_new or "").strip()
+            if not name_clean:
                 st.error("Name required."); st.stop()
-            url = upload_avatar(photo) if photo else None
+
+            photo_url = None
+            if up is not None:
+                img = _png_from_uploaded_file(up)
+                if img is not None:
+                    img = _square_thumbnail(img, size=384)
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG", optimize=True)
+                    key = f"{uuid.uuid4().hex}.png"
+                    try:
+                        photo_url = _storage_upload_png(buf.getvalue(), key)
+                        st.image(photo_url, width=120, caption="Uploaded")
+                    except Exception as e:
+                        st.error(f"Upload failed: {e}")
+                        st.stop()
+
             s = service()
             if s:
-                s.table("players").insert({
-                    "id": str(uuid.uuid4()), "name": name_new.strip(),
-                    "photo_url": url, "notes": notes_new
-                }).execute()
-                clear_caches(); st.success("Player created."); st.rerun()
+                s.table("players").upsert(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "name": name_clean,
+                        "photo_url": photo_url,
+                        "notes": (notes_new or "").strip(),
+                    },
+                    on_conflict="name",
+                ).execute()
+                clear_caches()
+                st.success("Player created/updated.")
+                st.rerun()
 
     st.divider()
+
+    # ---------- Edit existing players ----------
     st.markdown("#### Edit existing")
+    if pl.empty:
+        st.info("No players yet.")
+        return
+
+    # Sort by name for stable UI
+    pl = pl.sort_values("name", na_position="last")
+
     for _, r in pl.iterrows():
-        with st.expander(r["name"], expanded=False):
-            c1,c2,c3 = st.columns([2,1,1])
-            nm = c1.text_input("Name", value=r["name"], key=f"pm_nm_{r['id']}")
-            nt = c1.text_area("Notes", value=r.get("notes") or "", key=f"pm_nt_{r['id']}")
-            photo = c2.file_uploader("Replace photo", type=["heic","heif","jpg","jpeg","png"], key=f"pm_up_{r['id']}")
-            if c2.button("Save", key=f"pm_save_{r['id']}"):
-                s = service()
-                if s:
-                    url = upload_avatar(photo) if photo else r.get("photo_url")
-                    s.table("players").update({"name":nm,"notes":nt,"photo_url":url}).eq("id", r["id"]).execute()
-                    clear_caches(); st.success("Saved."); st.rerun()
-            if c3.button("Delete", key=f"pm_del_{r['id']}"):
-                s = service()
-                if s:
-                    s.table("players").delete().eq("id", r["id"]).execute()
-                    clear_caches(); st.success("Deleted."); st.rerun()
+        pid = str(r["id"])
+        display_name = r.get("name") or "(unnamed)"
+
+        with st.expander(display_name, expanded=False):
+            # Show current avatar
+            col_prev, col_edit = st.columns([1, 2])
+            with col_prev:
+                if r.get("photo_url"):
+                    st.image(r["photo_url"], width=120)
+                else:
+                    st.markdown(
+                        f"<div class='card' style='width:120px;height:120px;border-radius:12px;"
+                        f"display:flex;align-items:center;justify-content:center;'>"
+                        f"<div style='font-size:28px;font-weight:800'>{name_initials(display_name)}</div></div>",
+                        unsafe_allow_html=True
+                    )
+
+            with col_edit:
+                with st.form(f"pm_edit_form_{pid}"):
+                    c1, c2 = st.columns([2, 1])
+                    nm = c1.text_input("Name", value=display_name, key=f"pm_nm_{pid}")
+                    up_new = c2.file_uploader("Replace photo", type=["jpg","jpeg","png","heic","HEIC"], key=f"pm_up_{pid}")
+                    nt = st.text_area("Notes", value=(r.get("notes") or ""), key=f"pm_nt_{pid}")
+
+                    save_btn = st.form_submit_button("Save changes")
+
+                if save_btn:
+                    new_url = r.get("photo_url")
+                    if up_new is not None:
+                        img2 = _png_from_uploaded_file(up_new)
+                        if img2 is not None:
+                            img2 = _square_thumbnail(img2, size=384)
+                            buf2 = io.BytesIO()
+                            img2.save(buf2, format="PNG", optimize=True)
+                            key2 = f"{uuid.uuid4().hex}.png"
+                            try:
+                                new_url = _storage_upload_png(buf2.getvalue(), key2)
+                            except Exception as e:
+                                st.error(f"Upload failed: {e}")
+                                st.stop()
+
+                    payload = {
+                        "name": (nm or "").strip(),
+                        "notes": (nt or "").strip(),
+                        "photo_url": (new_url or None),
+                    }
+                    s = service()
+                    if s:
+                        s.table("players").update(payload).eq("id", pid).execute()
+                        clear_caches()
+                        st.success("Saved.")
+                        st.rerun()
+
+                # Danger zone: delete
+                if st.button("Delete player", key=f"pm_del_{pid}", type="secondary"):
+                    s = service()
+                    if s:
+                        s.table("players").delete().eq("id", pid).execute()
+                        clear_caches()
+                        st.success(f"Deleted {display_name}.")
+                        st.rerun()
+
 
 # -----------------------------------------------------------------------------
 # Import / Export
